@@ -1,0 +1,17 @@
+[package]
+name = "crck-explorer-cli"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "crck-explorer-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rage-toolkit-core = { path = "../rage-toolkit-core" }
+
+[build-dependencies]
+embed-resource = "3.0.12"

@@ -1,0 +1,9 @@
+[workspace]
+members = ["crates/r0-spike", "crates/rage-toolkit-core", "crates/crck-explorer-cli", "crates/rage-toolkit-app"]
+resolver = "2"
+
+# vendored + patched: see crates/rpf-archive/PATCHES.md
+[patch.crates-io]
+rpf-archive = { path = "crates/rpf-archive" }
+# vendored + patched: see crates/rage-formats/PATCHES.md
+rage-formats = { path = "crates/rage-formats" }

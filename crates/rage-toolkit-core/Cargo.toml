@@ -1,0 +1,15 @@
+[package]
+name = "rage-toolkit-core"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+rpf-archive = "0.10.0"
+rage-formats = "0.5.1"
+roxmltree = "0.20"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp", "webp"] }
+memmap2 = "0.9.12"
+flate2 = "1"
+regex-lite = "0.1"
