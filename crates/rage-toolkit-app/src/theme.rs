@@ -76,9 +76,13 @@ pub const GRAPHITE: Tokens = Tokens::new(c(27, 28, 31), c(36, 38, 42), c(48, 51,
 pub const LIGHT: Tokens = Tokens::new(c(243, 244, 246), c(255, 255, 255), c(236, 238, 242), c(213, 216, 222), c(27, 29, 34), c(102, 108, 120), c(37, 99, 235), LIGHT_STATUS);
 pub const DARK_BLUE: Tokens = Tokens::new(c(12, 20, 36), c(18, 28, 48), c(27, 40, 68), c(40, 58, 94), c(228, 235, 248), c(138, 154, 184), c(77, 163, 255), DARK_STATUS);
 pub const LIGHT_GREEN: Tokens = Tokens::new(c(238, 245, 238), c(251, 254, 251), c(225, 238, 226), c(196, 216, 198), c(26, 42, 28), c(93, 116, 97), c(46, 158, 79), LIGHT_STATUS);
+pub const SOFT_WHITE: Tokens = Tokens::new(c(232, 230, 225), c(244, 242, 237), c(222, 219, 212), c(200, 197, 189), c(38, 36, 33), c(110, 106, 98), c(52, 104, 196), LIGHT_STATUS);
+pub const SILVER: Tokens = Tokens::new(c(206, 209, 214), c(222, 225, 230), c(190, 194, 201), c(165, 170, 179), c(28, 30, 35), c(80, 86, 96), c(40, 90, 180), LIGHT_STATUS);
+pub const MID_GREY: Tokens = Tokens::new(c(84, 87, 94), c(96, 100, 108), c(112, 117, 126), c(132, 137, 147), c(240, 241, 244), c(190, 195, 204), c(140, 190, 255), DARK_STATUS);
+pub const PASTEL_PINK: Tokens = Tokens::new(c(250, 232, 238), c(255, 244, 247), c(246, 218, 228), c(232, 192, 207), c(74, 38, 52), c(143, 94, 112), c(214, 82, 130), LIGHT_STATUS);
 
 pub fn builtin() -> Vec<Theme> {
-    [("AMOLED Black", AMOLED), ("Graphite Grey", GRAPHITE), ("White / Light", LIGHT), ("Dark Blue", DARK_BLUE), ("Light Green", LIGHT_GREEN)].into_iter().map(|(n, t)| Theme { name: n.into(), tokens: t }).collect()
+    [("AMOLED Black", AMOLED), ("Graphite Grey", GRAPHITE), ("White / Light", LIGHT), ("Dark Blue", DARK_BLUE), ("Light Green", LIGHT_GREEN), ("Soft White", SOFT_WHITE), ("Silver", SILVER), ("Mid Grey", MID_GREY), ("Pastel Pink", PASTEL_PINK)].into_iter().map(|(n, t)| Theme { name: n.into(), tokens: t }).collect()
 }
 
 pub const DEFAULT: &str = "Graphite Grey";
@@ -280,7 +284,7 @@ mod tests {
             let back = parse(&serialise(&t)).unwrap();
             assert_eq!(back, t);
         }
-        assert_eq!(builtin().len(), 5);
+        assert_eq!(builtin().len(), 9);
     }
 
     #[test]
@@ -295,8 +299,8 @@ mod tests {
 
     #[test]
     fn dark_and_light_are_told_apart_and_custom_themes_are_kept_on_disk() {
-        assert!(AMOLED.is_dark() && GRAPHITE.is_dark() && DARK_BLUE.is_dark());
-        assert!(!LIGHT.is_dark() && !LIGHT_GREEN.is_dark());
+        assert!(AMOLED.is_dark() && GRAPHITE.is_dark() && DARK_BLUE.is_dark() && MID_GREY.is_dark());
+        assert!(!LIGHT.is_dark() && !LIGHT_GREEN.is_dark() && !SOFT_WHITE.is_dark() && !SILVER.is_dark() && !PASTEL_PINK.is_dark());
         let d = std::env::temp_dir().join(format!("rage_toolkit_themes_{}", std::process::id()));
         let t = Theme { name: "My: theme".into(), tokens: DARK_BLUE };
         save_custom(&d, &t).unwrap();

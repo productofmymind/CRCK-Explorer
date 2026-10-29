@@ -40,6 +40,8 @@ pub enum Action {
     Open(Loc, String),
     AddTextures(Loc, String),
     Extract(Loc, String, Kind),
+    /// a model written as XML: asks where to save it
+    ExportXml(Loc, String),
     /// a picture: show it in a floating window
     Preview(Loc, String),
     /// a texture dictionary: list its textures in a floating window

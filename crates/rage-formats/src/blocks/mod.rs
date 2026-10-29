@@ -19,6 +19,8 @@ pub mod vertex;
 pub mod xml;
 pub mod ybn;
 pub mod ydr;
+pub mod yft;
+pub mod yft_xml;
 
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
@@ -44,6 +46,8 @@ pub trait Block: Any {
     fn section(&self) -> Section { Section::System }
     fn references(&self, _g: &Graph) -> Vec<BlockId> { Vec::new() }
     fn parts(&self) -> Vec<(usize, BlockId)> { Vec::new() }
+    /// The block that lays this one out as a part of itself: a reference to this block is a reference to that one.
+    fn owner(&self) -> Option<BlockId> { None }
     fn write(&self, w: &mut Writer, g: &Graph) -> Result<()>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -78,6 +82,7 @@ impl Graph {
         fn add(g: &Graph, id: BlockId, top: bool, sys: &mut Vec<BlockId>, gfx: &mut Vec<BlockId>, seen: &mut HashSet<BlockId>) {
             let b = &g.blocks[id.0 as usize];
             if top {
+                if let Some(o) = b.owner() { return add(g, o, true, sys, gfx, seen); }
                 if !seen.insert(id) { return; }
                 match b.section() { Section::System => sys.push(id), Section::Graphics => gfx.push(id) }
             }

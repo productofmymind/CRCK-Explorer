@@ -49,6 +49,7 @@ mod rbf;
 
 pub use hash::rage_joaat;
 pub use blocks::ydr::{read_ydr, write_ydr, dump_ydr_xml, build_ydr_from_xml, build_ydr_from_xml_checked};
+pub use blocks::yft_xml::{dump_yft_xml, build_yft_from_xml, build_yft_from_xml_checked};
 pub use blocks::ybn::{read_ybn, write_ybn, dump_ybn_xml, build_ybn_from_xml, build_ybn_from_xml_checked};
 pub use blocks::{Graph, BlockId, Built};
 pub use math::{Vec2, Vec3, Vec4, Mat4};

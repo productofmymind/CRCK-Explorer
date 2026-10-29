@@ -419,7 +419,24 @@ pub struct Drawable {
     pub lights_count: usize,
     /// A `BoundBlock`; a bound in a drawable has no pages of its own.
     pub bound: Option<BlockId>,
+    /// Set for a fragment's `fragDrawable` (0x150 bytes, see [`FragTail`]).
+    pub frag: Option<FragTail>,
 }
+
+/// What a `fragDrawable` has after the plain drawable's first 0xA8 bytes: bytes 0xA8..0x150 kept as read (a matrix,
+/// a pointer to the drawable's bound and fields nobody has named), with the name pointer at 0x130 written from the
+/// drawable's name. Pointers in it are listed in `links` as (offset into `raw`, target, offset into the target) and
+/// are zero in `raw`.
+#[derive(Clone, Default)]
+pub struct FragTail { pub raw: Vec<u8>, pub links: Vec<(usize, BlockId, u32)> }
+/// `FragTail::raw` is the struct from 0xA8 to this.
+pub const FRAG_DRAWABLE_SIZE: usize = 0x150;
+/// Where the name pointer sits in `FragTail::raw`.
+pub const FRAG_NAME_SLOT: usize = 0x130 - 0xA8;
+
+/// Which of a drawable's shared blocks `write_xml_ex` leaves out because an earlier drawable in the file has them.
+#[derive(Clone, Copy, Default)]
+pub struct Shared { pub shader_group: bool, pub skeleton: bool, pub joints: bool }
 
 impl Drawable {
     /// `FlagsHigh` and its siblings (`lod`: 0 high .. 3 very low).
@@ -446,6 +463,11 @@ impl Drawable {
     /// `Drawable.WriteXml` for the `<Drawable>` element's children: `Name`, the base fields,
     /// then the lights.
     pub fn write_xml(&self, x: &mut XmlOut, g: &Graph, names: &NameTable, dds_dir: Option<&Path>) -> Result<()> {
+        self.write_xml_ex(x, g, names, dds_dir, Shared::default())
+    }
+
+    /// [`Self::write_xml`] without the blocks marked in `shared`.
+    pub fn write_xml_ex(&self, x: &mut XmlOut, g: &Graph, names: &NameTable, dds_dir: Option<&Path>, shared: Shared) -> Result<()> {
         x.string("Name", self.name.map_or("", |n| g.get::<StringBlock>(n).0.as_str()));
         x.vec3("BoundingSphereCenter", self.bounding_center);
         x.value("BoundingSphereRadius", float(self.bounding_sphere_radius));
@@ -453,17 +475,17 @@ impl Drawable {
         x.vec3("BoundingBoxMax", self.bounding_box_max);
         for (tag, d) in ["LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"].into_iter().zip(self.lod_dist) { x.value(tag, float(d)); }
         for (lod, tag) in ["FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"].into_iter().enumerate() { x.value(tag, self.flags(lod)); }
-        if let Some(sg) = self.shader_group {
+        if let Some(sg) = self.shader_group.filter(|_| !shared.shader_group) {
             x.open("ShaderGroup");
             g.get::<ShaderGroup>(sg).write_xml(x, g, names, dds_dir)?;
             x.close("ShaderGroup");
         }
-        if let Some(s) = self.skeleton {
+        if let Some(s) = self.skeleton.filter(|_| !shared.skeleton) {
             x.open("Skeleton");
             g.get::<Skeleton>(s).write_xml(x, g);
             x.close("Skeleton");
         }
-        if let Some(j) = self.joints {
+        if let Some(j) = self.joints.filter(|_| !shared.joints) {
             x.open("Joints");
             g.get::<Joints>(j).write_xml(x, g);
             x.close("Joints");
@@ -522,7 +544,7 @@ impl Drawable {
             bounding_box_min: child_vec3(n, "BoundingBoxMin"),
             bounding_box_max: child_vec3(n, "BoundingBoxMax"),
             lod_dist: ["LodDistHigh", "LodDistMed", "LodDistLow", "LodDistVlow"].map(|t| child_attr_f32(n, t, "value")),
-            render_mask_flags: [0; 4], models, name, lights, lights_count, bound,
+            render_mask_flags: [0; 4], models, name, lights, lights_count, bound, frag: None,
         };
         for (lod, tag) in ["FlagsHigh", "FlagsMed", "FlagsLow", "FlagsVlow"].into_iter().enumerate() {
             d.set_flags(lod, child_attr_u32(n, tag, "value") as u8);
@@ -532,7 +554,13 @@ impl Drawable {
     }
 
     /// `Drawable.Read` (and `DrawableBase.Read`).
-    pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> {
+    pub fn read(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> { Self::read_layout(r, g, va, false) }
+
+    /// A fragment's `fragDrawable`: the same first 0xA8 bytes, the name pointer at 0x130, and no light list or bound
+    /// of its own (the physics archetype owns the bound), so `lights` and `bound` come back empty.
+    pub fn read_frag(r: &mut Reader, g: &mut Graph, va: u64) -> Result<Option<BlockId>> { Self::read_layout(r, g, va, true) }
+
+    fn read_layout(r: &mut Reader, g: &mut Graph, va: u64, frag: bool) -> Result<Option<BlockId>> {
         if va == 0 { return Ok(None); }
         if let Some(id) = r.cached_as::<Self>(va)? { return Ok(Some(id)); }
         let mut c = r.cursor(va)?;
@@ -547,11 +575,15 @@ impl Drawable {
         let render_mask_flags = [c.u32(), c.u32(), c.u32(), c.u32()];
         let joints_ptr = c.u64(); c.skip(2 + 2 + 4);
         let models_ptr = c.u64();
+        if frag { c.skip(0x130 - 0xA8); }
         let name_ptr = c.u64();
-        let (lights_ptr, lights_count, _) = read_simple_list64(&mut c);
-        c.skip(8);
-        let bound_ptr = c.u64();
+        let (lights_ptr, lights_count, bound_ptr) = if frag { (0, 0, 0) } else {
+            let (lights_ptr, lights_count, _) = read_simple_list64(&mut c);
+            c.skip(8);
+            (lights_ptr, lights_count, c.u64())
+        };
         c.check()?;
+        let frag = if frag { Some(FragTail { raw: r.slice(va + 0xA8, FRAG_DRAWABLE_SIZE - 0xA8)?.to_vec(), links: Vec::new() }) } else { None };
 
         let pages = read_pages_info(r, g, pages_ptr)?;
         let shader_group = ShaderGroup::read(r, g, sg_ptr)?;
@@ -563,19 +595,15 @@ impl Drawable {
         let bound = BoundBlock::read(r, g, bound_ptr, None)?;
         let id = g.add(Drawable {
             vft, pages, shader_group, skeleton, joints, bounding_center, bounding_sphere_radius, bounding_box_min, bounding_box_max,
-            lod_dist, render_mask_flags, models, name, lights, lights_count: lights_count as usize, bound,
+            lod_dist, render_mask_flags, models, name, lights, lights_count: lights_count as usize, bound, frag,
         });
         r.cache::<Self>(va, id); Ok(Some(id))
     }
 }
-impl Block for Drawable {
-    fn length(&self) -> usize { 208 }
-    fn references(&self, _g: &Graph) -> Vec<BlockId> {
-        [self.pages, self.shader_group, self.skeleton, self.joints, self.models, self.name, self.lights, self.bound].into_iter().flatten().collect()
-    }
-    fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
+impl Drawable {
+    /// The first 0xA8 bytes, common to a drawable and a `fragDrawable`.
+    fn write_head(&self, w: &mut Writer, g: &Graph) {
         let lod = |f: fn(&DrawableModelsBlock, &Graph, BlockId) -> u64| self.models.map_or(0, |m| f(g.get::<DrawableModelsBlock>(m), g, m));
-        let lights = self.lights.map_or(0, |l| g.get::<StructArray<Light>>(l).items.len());
         write_file_base(w, g, self.vft, self.pages);
         w.u64(g.ptr(self.shader_group)); w.u64(g.ptr(self.skeleton));
         w.vec3(self.bounding_center); w.f32(self.bounding_sphere_radius);
@@ -588,6 +616,29 @@ impl Block for Drawable {
         w.u64(g.ptr(self.joints));
         w.u16(0); w.u16(self.models.map_or(0, |m| g.length(m).div_ceil(16)) as u16); w.u32(0);
         w.u64(g.ptr(self.models));
+    }
+
+    fn write_frag(&self, w: &mut Writer, g: &Graph, f: &FragTail) -> Result<()> {
+        if f.raw.len() != FRAG_DRAWABLE_SIZE - 0xA8 { bail!("a fragDrawable's extra data is {} bytes, not {}", f.raw.len(), FRAG_DRAWABLE_SIZE - 0xA8); }
+        self.write_head(w, g);
+        let mut raw = f.raw.clone();
+        for &(at, to, add) in &f.links { raw[at..at + 8].copy_from_slice(&(g.position(to) + u64::from(add)).to_le_bytes()); }
+        raw[FRAG_NAME_SLOT..FRAG_NAME_SLOT + 8].copy_from_slice(&g.ptr(self.name).to_le_bytes());
+        w.bytes(&raw);
+        Ok(())
+    }
+}
+
+impl Block for Drawable {
+    fn length(&self) -> usize { if self.frag.is_some() { FRAG_DRAWABLE_SIZE } else { 208 } }
+    fn references(&self, _g: &Graph) -> Vec<BlockId> {
+        let tail = self.frag.iter().flat_map(|f| f.links.iter().map(|l| l.1));
+        [self.pages, self.shader_group, self.skeleton, self.joints, self.models, self.name, self.lights, self.bound].into_iter().flatten().chain(tail).collect()
+    }
+    fn write(&self, w: &mut Writer, g: &Graph) -> Result<()> {
+        if let Some(f) = &self.frag { return self.write_frag(w, g, f); }
+        let lights = self.lights.map_or(0, |l| g.get::<StructArray<Light>>(l).items.len());
+        self.write_head(w, g);
         w.u64(g.ptr(self.name));
         write_simple_list64(w, g, self.lights, lights, "lights")?;
         w.u64(0);

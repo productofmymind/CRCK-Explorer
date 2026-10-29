@@ -749,6 +749,14 @@ impl App {
                     Ok(p) => self.accept(vec![p]),
                     Err(e) => self.status = format!("{e:#}"),
                 },
+                BAction::ExportXml(loc, name) => {
+                    if let Some(d) = rfd::FileDialog::new().set_file_name(format!("{name}.xml")).save_file() {
+                        self.status = match browser::read(&loc).and_then(|data| rage_toolkit_core::xmlconv::export(&name, &data)).and_then(|xml| Ok(std::fs::write(&d, xml)?)) {
+                            Ok(()) => format!("{name} written as XML to {}", d.display()),
+                            Err(e) => format!("{name}: XML export failed: {e:#}"),
+                        };
+                    }
+                }
                 BAction::Extract(loc, name, kind) => {
                     let dest = if kind == BKind::File { rfd::FileDialog::new().set_file_name(&name).save_file() } else { rfd::FileDialog::new().pick_folder() };
                     if let Some(d) = dest {

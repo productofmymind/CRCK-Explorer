@@ -148,6 +148,8 @@ pub struct Explorer {
     current: Vec<String>,
     history: History,
     selected: Option<String>,
+    /// where the selected item lives; tells same-named rows apart in search results
+    selected_place: Option<String>,
     sort: Col,
     desc: bool,
     listing: Option<Listing>,
@@ -197,6 +199,7 @@ impl Explorer {
             current,
             history: History::default(),
             selected: None,
+            selected_place: None,
             sort: Col::Name,
             desc: false,
             listing: None,
@@ -336,6 +339,17 @@ impl Explorer {
         if self.results.is_some() {
             return false; // search results: not one folder
         }
+        // a model XML (<Drawable>, <BoundsFile>) goes in as the binary it describes; any other XML as it is
+        let converted: Vec<PathBuf>;
+        let files = if files.iter().any(|f| is_xml(f)) {
+            converted = files.iter().filter_map(|f| self.convert_xml(f)).collect();
+            if converted.is_empty() {
+                return true;
+            }
+            &converted[..]
+        } else {
+            files
+        };
         let Some(place) = self.editable.clone() else {
             if self.current.iter().any(|n| n.to_lowercase().ends_with(".rpf")) && files.iter().any(|f| f.is_file()) {
                 self.message = "This is one of the game's own archives, which CRCK Explorer never writes to: copy it to the mods folder (the bar above) and drop the files into the copy".into();
@@ -353,6 +367,39 @@ impl Explorer {
         }
         self.add_files(&place, &files, game);
         true
+    }
+
+    /// A dropped file as it goes into the folder: a model XML becomes the `.ydr` / `.ybn` it describes (written to the cache
+    /// folder, named after the XML without its `.xml`), anything else stays. `None` when the drop is refused (`message` says why).
+    fn convert_xml(&mut self, f: &Path) -> Option<PathBuf> {
+        use rage_toolkit_core::xmlconv;
+        if !is_xml(f) {
+            return Some(f.to_path_buf());
+        }
+        let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Ok(xml) = std::fs::read_to_string(f) else { return Some(f.to_path_buf()) };
+        let Some(ext) = xmlconv::import_ext(&xml) else { return Some(f.to_path_buf()) };
+        let stem = name[..name.len() - 4].trim_end_matches(&format!(".{ext}")).to_string();
+        match xmlconv::import(&xml, f.parent()) {
+            Ok((bytes, warnings)) => {
+                let out = rage_toolkit_core::game::cache_dir().join("xml").join(format!("{stem}.{ext}"));
+                let written = out.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&out, bytes));
+                match written {
+                    Ok(()) => {
+                        self.message = format!("{name} became {stem}.{ext}{}", if warnings.is_empty() { String::new() } else { format!(" ({})", warnings.join("; ")) });
+                        Some(out)
+                    }
+                    Err(e) => {
+                        self.message = format!("{name}: {e}");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                self.message = format!("{name}: {e:#}");
+                None
+            }
+        }
     }
 
     /// The small windows that ask for a new name, or whether to delete.
@@ -1162,6 +1209,7 @@ impl Explorer {
         let (mut click, mut dbl, mut drag): (Option<usize>, Option<usize>, Option<usize>) = (None, None, None);
         let mut menu: Option<(usize, Menu)> = None;
         let selected = self.selected.clone();
+        let selected_place = self.selected_place.clone();
         let mut area = egui::ScrollArea::vertical().id_salt("explorer_list").auto_shrink([false, false]);
         if let Some(name) = &self.scroll_to {
             if let Some(pos) = listing.rows.iter().position(|r| matches!(r, Row::Item(i) if &listing.items[*i].name == name)) {
@@ -1180,7 +1228,7 @@ impl Explorer {
                     }
                     Row::Item(i) => {
                         let it = &listing.items[*i];
-                        let is_sel = selected.as_deref() == Some(it.name.as_str());
+                        let is_sel = selected.as_deref() == Some(it.name.as_str()) && (!results_mode || selected_place.as_deref() == Some(it.place.as_str()));
                         if is_sel {
                             ui.painter().rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
                         } else if resp.hovered() {
@@ -1226,6 +1274,10 @@ impl Explorer {
                             }
                             if ui.button("Extract...").clicked() {
                                 menu = Some((*i, Menu::Extract));
+                                ui.close();
+                            }
+                            if it.kind == Kind::File && rage_toolkit_core::xmlconv::can_export(&it.name) && ui.button("Export as XML...").clicked() {
+                                menu = Some((*i, Menu::ExportXml));
                                 ui.close();
                             }
                             if disk_here {
@@ -1274,11 +1326,14 @@ impl Explorer {
         }
         let item_of = |this: &Self, i: usize| this.listing.as_ref().map(|l| l.items[i].clone());
         if let Some(i) = click {
-            self.selected = item_of(self, i).map(|it| it.name);
+            let it = item_of(self, i);
+            self.selected_place = it.as_ref().map(|it| it.place.clone());
+            self.selected = it.map(|it| it.name);
         }
         // a row dragged: out of the window as a copy (Windows Explorer, the desktop, ...)
         if let Some(it) = drag.and_then(|i| item_of(self, i)) {
             self.selected = Some(it.name.clone());
+            self.selected_place = Some(it.place.clone());
             let path = self.item_path(&it);
             if let Some(n) = browser::find_mut(&mut self.roots, &path, cx) {
                 actions.push(Action::DragOut(n.loc.clone(), it.name.clone(), it.kind));
@@ -1287,12 +1342,14 @@ impl Explorer {
         if let Some(i) = dbl {
             if let Some(it) = item_of(self, i) {
                 self.selected = Some(it.name.clone());
+                self.selected_place = Some(it.place.clone());
                 self.open_item(&it, cx, actions);
             }
         }
         if let Some((i, m)) = menu {
             if let Some(it) = item_of(self, i) {
                 self.selected = Some(it.name.clone());
+                self.selected_place = Some(it.place.clone());
                 match m {
                     Menu::Open => self.open_item(&it, cx, actions),
                     Menu::ShowInFolder => {
@@ -1304,6 +1361,12 @@ impl Explorer {
                         let path = self.item_path(&it);
                         if let Some(n) = browser::find_mut(&mut self.roots, &path, cx) {
                             actions.push(if m == Menu::AddTextures { Action::AddTextures(n.loc.clone(), it.name.clone()) } else { Action::Extract(n.loc.clone(), it.name.clone(), it.kind) });
+                        }
+                    }
+                    Menu::ExportXml => {
+                        let path = self.item_path(&it);
+                        if let Some(n) = browser::find_mut(&mut self.roots, &path, cx) {
+                            actions.push(Action::ExportXml(n.loc.clone(), it.name.clone()));
                         }
                     }
                     Menu::CopyName => ui.ctx().copy_text(it.name.clone()),
@@ -1382,6 +1445,10 @@ impl Explorer {
     }
 }
 
+fn is_xml(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Menu {
     Trash,
@@ -1389,6 +1456,7 @@ enum Menu {
     ShowInFolder,
     AddTextures,
     Extract,
+    ExportXml,
     CopyName,
     Replace,
     Rename,
@@ -1717,6 +1785,21 @@ mod tests {
         let game_hit = Hit { path: "update/x64/dlcpacks/mpheist/dlc.rpf/x64/a.ytd".into(), size: 1, is_dir: false };
         assert_eq!(ex.components_of(&game_hit).unwrap()[..5], ["GTA V", "update", "x64", "dlcpacks", "mpheist"]);
         assert!(ex.components_of(&Hit { path: "C:\\elsewhere\\a.ytd".into(), size: 0, is_dir: false }).is_none());
+    }
+
+    #[test]
+    fn a_dropped_fragment_xml_becomes_a_yft() {
+        let dir = std::env::temp_dir().join(format!("ratchet-frag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("ratchet_test_fragment.yft.xml");
+        std::fs::write(&src, rage_toolkit_core::xmlconv::test_fragment_xml()).unwrap();
+        let mut ex = Explorer::new(None);
+        let out = ex.convert_xml(&src).unwrap_or_else(|| panic!("{}", ex.message));
+        assert_eq!(out.file_name().unwrap().to_string_lossy(), "ratchet_test_fragment.yft");
+        assert!(ex.message.contains("became ratchet_test_fragment.yft"), "{}", ex.message);
+        assert_eq!(&std::fs::read(&out).unwrap()[..4], b"RSC7");
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

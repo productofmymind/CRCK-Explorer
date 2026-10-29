@@ -19,6 +19,7 @@ pub mod search;
 pub mod siren;
 pub mod texture;
 pub mod validate;
+pub mod xmlconv;
 pub mod ytdtools;
 
 pub use rage_formats::gen9::Edition;
