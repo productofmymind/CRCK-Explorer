@@ -73,6 +73,9 @@ Everything the window does is also a command (`crck-explorer-cli ...`), so it ca
     crck-explorer-cli handling compare my.meta --game    # your handling beside the vanilla vehicles
     crck-explorer-cli livery add pack\ --vehicle myveh --name lspd2
     crck-explorer-cli siren check carcols.meta
+    crck-explorer-cli ycd to-xml clip.ycd             # a clip dictionary to .ycd.xml (Sollumz and CodeWalker read that)
+    crck-explorer-cli ycd from-xml clip.ycd.xml       # and back to a binary .ycd
+    crck-explorer-cli ycd info clip.ycd               # the clips and animations in it
 
 `crck-explorer-cli --help` lists everything; every command has its own `--help`. Double-clicking `crck-explorer-cli.exe` opens the window.
 

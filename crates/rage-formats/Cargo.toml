@@ -64,6 +64,10 @@ path = "tests/ybn_xml.rs"
 name = "ydr_xml"
 path = "tests/ydr_xml.rs"
 
+[[test]]
+name = "ycd_real"
+path = "tests/ycd_real.rs"
+
 [dependencies.anyhow]
 version = "1.0"
 

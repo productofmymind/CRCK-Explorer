@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use rage_toolkit_core::{game, handling, livery, model, pack, pipeline, rpf, siren, texture, validate, ytdtools};
+use rage_toolkit_core::{game, handling, livery, model, pack, pipeline, rpf, siren, texture, validate, ycdtools, ytdtools};
 use std::{fs, path::PathBuf, process::ExitCode};
 
 #[derive(Parser)]
@@ -127,7 +127,29 @@ enum Cmd {
     Ytd {
         #[command(subcommand)]
         cmd: YtdCmd,
+    },    /// Clip dictionaries (.ycd): convert to and from .ycd.xml, list what is in one
+    Ycd {
+        #[command(subcommand)]
+        cmd: YcdCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum YcdCmd {
+    /// Binary .ycd to .ycd.xml (the text form Sollumz and CodeWalker use)
+    ToXml {
+        input: PathBuf,
+        /// default: the input name with .xml added
+        out: Option<PathBuf>,
+    },
+    /// .ycd.xml to a binary .ycd
+    FromXml {
+        input: PathBuf,
+        /// default: the input name without .xml
+        out: Option<PathBuf>,
+    },
+    /// List the clips and animations in a .ycd or .ycd.xml
+    Info { input: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -795,6 +817,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
             println!("{} {}; {}x{}", if r.replaced { "replaced" } else { "added" }, r.name, r.width, r.height);
         }
         Cmd::Ytd { cmd } => ytd_cmd(cmd)?,
+        Cmd::Ycd { cmd } => match cmd {
+            YcdCmd::ToXml { input, out } => {
+                let out = out.unwrap_or_else(|| ycdtools::default_output(&input));
+                println!("{}", ycdtools::ycd_to_xml(&input, &out)?);
+            }
+            YcdCmd::FromXml { input, out } => {
+                let out = out.unwrap_or_else(|| ycdtools::default_output(&input));
+                println!("{}", ycdtools::ycd_from_xml(&input, &out)?);
+            }
+            YcdCmd::Info { input } => print!("{}", ycdtools::ycd_info(&input)?),
+        },
     }
     Ok(ExitCode::SUCCESS)
 }
