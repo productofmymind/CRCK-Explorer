@@ -1,6 +1,6 @@
 [package]
 name = "rage-toolkit-app"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 bytemuck = "1.25.2"
-eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "clipboard", "wayland", "x11"] }
 glam = "0.30"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 pollster = "1.0.1"
