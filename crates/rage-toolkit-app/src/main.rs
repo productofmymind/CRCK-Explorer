@@ -805,6 +805,29 @@ impl App {
         }
     }
 
+    /// Every listed texture as `<name>.dds` in a folder the user picks. Embedded ones (no .ytd to read) are skipped.
+    fn export_all_textures(&mut self) {
+        let Some(dir) = rfd::FileDialog::new().set_title("Export all textures to...").pick_folder() else { return };
+        let (mut done, mut skipped, mut seen) = (0, 0, std::collections::HashSet::new());
+        let mut errs: Vec<String> = vec![];
+        for t in &self.textures {
+            let Some(src) = &t.source else { skipped += 1; continue };
+            if !seen.insert(t.name.to_lowercase()) {
+                continue;
+            }
+            match rage_toolkit_core::texture::export_texture(src, &t.name, &dir.join(format!("{}.dds", t.name))) {
+                Ok(()) => done += 1,
+                Err(e) => errs.push(format!("{}: {e:#}", t.name)),
+            }
+        }
+        self.status = format!(
+            "exported {done} texture(s) to {}{}{}",
+            dir.display(),
+            if skipped > 0 { format!("; {skipped} embedded in the model skipped") } else { String::new() },
+            if errs.is_empty() { String::new() } else { format!("; {} failed ({})", errs.len(), errs[0]) }
+        );
+    }
+
     /// 0 = export DDS, 1 = export PNG, 2 = replace
     fn texture_action(&mut self, i: usize, action: u8) {
         let Some(t) = self.textures.get(i) else { return };
@@ -1324,13 +1347,16 @@ impl eframe::App for App {
             self.ui_parts(ui);
         });
         let mut tex_action: Option<(usize, u8)> = None;
-        let (mut add_tex, mut find_tex) = (false, false);
+        let (mut add_tex, mut find_tex, mut export_all) = (false, false, false);
         egui::Panel::right("textures").default_size(290.0).frame(theme::panel_frame()).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(format!("Textures ({})", self.textures.len()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Add...").on_hover_text("Add .ytd texture dictionaries").clicked() {
                         add_tex = true;
+                    }
+                    if ui.add_enabled(!self.textures.is_empty(), egui::Button::new("Export all DDS...").small()).on_hover_text("Save every listed texture (the model's own and the shared vehshare ones) as .dds into a folder").clicked() {
+                        export_all = true;
                     }
                 });
             });
@@ -1423,6 +1449,9 @@ impl eframe::App for App {
         });
         if add_tex {
             self.add_ytd_dialog();
+        }
+        if export_all {
+            self.export_all_textures();
         }
         if find_tex {
             self.find_missing_textures();
