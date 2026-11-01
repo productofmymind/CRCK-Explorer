@@ -91,6 +91,17 @@ Prebuilt zips are on the **Releases** page (`crck-explorer-<version>-windows-x64
 
 Windows 10 or 11, 64-bit, with a normal graphics driver (DirectX 12 or Vulkan). The exes are not code-signed, so SmartScreen may warn on the first start: **More info > Run anyway**.
 
+### Antivirus warnings (false positives)
+
+Windows Defender or another antivirus may flag `crck-explorer.exe` (for example as `Trojan:Win32/Bearfoos.A!ml`). **This is most likely a false positive, but do not just take our word for it. You can check:**
+
+- **Why it happens:** the exes are new, unsigned and not yet known to antivirus vendors. Names ending in `!ml` are machine-learning guesses based on how a program behaves, not a match with known malware. A program that uses the shell and the clipboard, reads game files and deletes files (the Recycle Bin option) can look like that to a guess. Unsigned Rust programs are flagged like this often.
+- **What it does not do:** CRCK Explorer has no networking code at all: no downloads, no uploads, no telemetry, no update check. It does not touch the registry or run in the background. The only programs it starts are Windows Explorer (to show a folder) and its own viewer. Outside the files you open, it reads your GTA V folders and, when you paste into a text box, the clipboard.
+- **Check it yourself:** the full source is in this repository (GPL-3.0). Read it (the few Windows calls are in `dragout.rs`, `explorer.rs` and `main.rs` in `crates/rage-toolkit-app/src`) or build it yourself (see below). Check the download against `SHA256SUMS`, and upload the exe to [VirusTotal](https://www.virustotal.com) to see what the other vendors say.
+- **If Defender removes it:** open Windows Security > Protection history, choose the item and **Allow on device**, or build from source. To help clear it for everyone, submit the file at <https://www.microsoft.com/wdsi/filesubmission> as *incorrectly detected as malware*.
+
+We cannot code-sign the releases (certificates are paid). If you do not trust a download, build it yourself or do not run it. Never turn off your antivirus for this or any program.
+
 **Your GTA V folder** is found by itself (Steam, Rockstar and Epic locations on every drive). Point CRCK Explorer at another place once with `crck-explorer-cli game --dir "D:\Games\Grand Theft Auto V" info` (it remembers the folder). Without the game, the Viewer and all the Tools still work on your own files.
 
 ## Build it yourself
