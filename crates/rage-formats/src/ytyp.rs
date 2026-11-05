@@ -242,6 +242,8 @@ pub struct Archetype {
     pub bb_min: Vec3,
     pub bb_max: Vec3,
     pub lod_dist: f32,
+    /// the archetype's `flags` (bit 2048: a shadow proxy, not drawn on its own)
+    pub flags: u32,
     /// `textureDictionary` hash, 0 when none.
     pub texture_dict_hash: u32,
     /// `drawableDictionary` hash: the `.ydd` holding the model when
@@ -385,6 +387,7 @@ pub fn parse_ytyp(data: &[u8]) -> Result<Ytyp> {
             bb_min: vec3_le(base, 32),
             bb_max: vec3_le(base, 48),
             lod_dist: f32_le(base, 8),
+            flags: u32_le(base, 12),
             texture_dict_hash: u32_le(base, 92),
             drawable_dictionary_hash: u32_le(base, 100),
             asset_type: u32_le(base, 108),

@@ -243,7 +243,7 @@ pub fn shrink_to(w: u32, h: u32, rgba: Vec<u8>, max: u32) -> (u32, u32, Vec<u8>)
     (w, h, rgba)
 }
 
-fn texture_view(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> wgpu::TextureView {
+pub(crate) fn texture_view(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> wgpu::TextureView {
     let levels = 32 - w.max(h).max(1).leading_zeros();
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("model_texture"),

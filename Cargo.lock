@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "crck-explorer-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -855,6 +855,12 @@ checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
 ]
+
+[[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fax"
@@ -2213,15 +2219,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "r0-spike"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rage-formats",
- "rpf-archive",
-]
-
-[[package]]
 name = "rage-formats"
 version = "0.5.1"
 dependencies = [
@@ -2231,12 +2228,13 @@ dependencies = [
  "json",
  "roxmltree",
  "rusty_dds",
+ "tempfile",
  "texture2ddecoder",
 ]
 
 [[package]]
 name = "rage-toolkit-app"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2244,7 +2242,9 @@ dependencies = [
  "embed-resource",
  "glam",
  "image",
+ "naga",
  "pollster 1.0.1",
+ "rage-formats",
  "rage-toolkit-core",
  "raw-window-handle",
  "rfd",
@@ -2253,10 +2253,11 @@ dependencies = [
 
 [[package]]
 name = "rage-toolkit-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "flate2",
+ "glam",
  "image",
  "memmap2",
  "rage-formats",
@@ -2732,6 +2733,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix 1.1.5",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

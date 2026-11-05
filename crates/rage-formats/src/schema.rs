@@ -2,9 +2,8 @@
 //!
 //! A Meta or PSO file carries the schema of the structures it holds, so a
 //! reader never needs one. A writer building a file from XML or JSON does:
-//! [`Schema::builtin`] is the reference tool's table of the game's structures (the
-//! names are the game's own identifiers), extracted by
-//! `tools/extract_reference_schema.py`, and [`Schema::from_file`] takes
+//! [`Schema::builtin`] is the built-in table of the game's structures (the
+//! names are the game's own identifiers), and [`Schema::from_file`] takes
 //! the definitions an existing binary file carries, which win over the
 //! built-in ones when merged.
 use std::collections::HashMap;
@@ -92,11 +91,11 @@ pub struct Schema {
     pub pso_enums: HashMap<u32, PsoEnumDef>,
 }
 
-const META_TABLE: &str = include_str!("schema/reference_meta.txt");
-const PSO_TABLE: &str = include_str!("schema/reference_pso.txt");
+const META_TABLE: &str = include_str!("schema/meta_table.txt");
+const PSO_TABLE: &str = include_str!("schema/pso_table.txt");
 
 impl Schema {
-    /// The reference tool's tables, parsed once.
+    /// The built-in tables, parsed once.
     pub fn builtin() -> &'static Schema {
         static BUILTIN: OnceLock<Schema> = OnceLock::new();
         BUILTIN.get_or_init(|| {
@@ -106,8 +105,8 @@ impl Schema {
         })
     }
 
-    /// Parses the text table format `tools/extract_reference_schema.py`
-    /// writes (see that script's docstring).
+    /// Parses the text table format of the built-in tables (an `M` line per Meta
+    /// structure, a `P` line per PSO structure).
     pub fn parse_table(text: &str) -> Result<Schema> {
         let mut schema = Schema::default();
         let hex = |s: &str| u32::from_str_radix(s, 16).with_context(|| format!("bad hash '{s}'"));

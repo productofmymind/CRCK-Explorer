@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn reads_the_retail_pso_form() {
-        let Some(dir) = std::env::var_os("RAGE_TEST_META_DIR") else { return };
+        let Some(dir) = crate::testenv::var_os("RAGE_TEST_META_DIR") else { return };
         let Ok(data) = std::fs::read(std::path::Path::new(&dir).join("carvariations.ymt")) else { return };
         let v = parse_carvariations(&data).unwrap();
         let ninef = v.variation_data.iter().find(|v| v.model_name == "ninef").expect("ninef");

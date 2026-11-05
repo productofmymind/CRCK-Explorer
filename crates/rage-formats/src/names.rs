@@ -14,12 +14,12 @@ use crate::hash::rage_joaat;
 pub const CORE_NAMES: &str = include_str!("names/core.txt");
 
 /// The structure, member, enum and value names the game hashes, as
-/// The reference tool's MetaNames table lists them, each verified against its hash. These are the
+/// The meta names table lists them, each verified against its hash. These are the
 /// schema names no archive scan can recover — `CVehicleModelColorIndices`
 /// is an `itemType`, never a file — so they are built in.
-pub const REFERENCE_NAMES: &str = include_str!("names/reference.txt");
+pub const META_NAMES: &str = include_str!("names/meta_names.txt");
 
-/// The shader parameter names of the reference tool's `ShaderParamNames` enum, one per line in
+/// The shader parameter names of the game's `ShaderParamNames` enum, one per line in
 /// file order. Their hashes are those of the *lowercased* name, so [`NameTable::core`]
 /// loads them with [`NameTable::add_list_lowercase`].
 pub const SHADER_PARAM_NAMES: &str = include_str!("names/shader_params.txt");
@@ -36,13 +36,13 @@ impl NameTable {
         Self::default()
     }
 
-    /// The built-in names: the shader parameter names, this crate's own list, then the reference tool's.
+    /// The built-in names: the shader parameter names, this crate's own list, then the meta names.
     pub fn core() -> Self {
         let mut t = Self::default();
         // first: a lowercase spelling in the other lists must not hide the enum's own case
         t.add_list_lowercase(SHADER_PARAM_NAMES);
         t.add_list(CORE_NAMES);
-        t.add_list(REFERENCE_NAMES);
+        t.add_list(META_NAMES);
         t
     }
 
@@ -155,16 +155,16 @@ mod tests {
     }
 
     #[test]
-    fn every_reference_name_is_its_own_hash_source() {
+    fn every_meta_name_is_its_own_hash_source() {
         // The list is filtered on generation; this keeps it that way.
-        for line in REFERENCE_NAMES.lines() {
+        for line in META_NAMES.lines() {
             let name = line.trim();
             if name.is_empty() || name.starts_with('#') {
                 continue;
             }
             assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{name:?}");
         }
-        assert!(REFERENCE_NAMES.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).count() > 20_000);
+        assert!(META_NAMES.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).count() > 20_000);
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod shader_param_tests {
     use super::*;
 
     #[test]
-    fn shader_parameter_names_match_references_enum_values() {
+    fn shader_parameter_names_match_the_game_enum_values() {
         for (name, value) in [("DiffuseSampler", 4_059_966_321u32), ("specularFactor", 376_311_761), ("BumpSampler", 1_186_448_975)] {
             assert_eq!(rage_joaat(&name.to_lowercase()), value, "{name}");
             assert_eq!(NameTable::core().get(value), Some(name));

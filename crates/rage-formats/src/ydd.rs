@@ -65,6 +65,48 @@ pub struct Drawable {
     pub render_masks: [u32; 4],
     pub shader_group: Option<ShaderGroup>,
     pub lods: Vec<DrawableLod>,
+    /// the bones of the drawable's skeleton (none for most props)
+    pub skeleton: Option<Vec<Bone>>,
+}
+
+/// One bone of a drawable's skeleton, local to its parent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bone {
+    pub name: String,
+    /// index of the parent bone, -1 for a root
+    pub parent: i16,
+    /// rotation (x, y, z, w), translation and scale relative to the parent
+    pub rotation: [f32; 4],
+    pub translation: [f32; 3],
+    pub scale: [f32; 3],
+}
+
+/// The bones of the skeleton at `va` (112 bytes: bones pointer at 0x20, bone count at 0x5E; each bone is 80 bytes). None when there is none or
+/// it cannot be read.
+fn parse_skeleton_at(reader: &ResReader<'_>, va: u64) -> Option<Vec<Bone>> {
+    if va == 0 {
+        return None;
+    }
+    let raw = reader.resolve(va, 112)?;
+    let (bones_ptr, count) = (u64_le(raw, 0x20), u16_le(raw, 0x5E) as usize);
+    if bones_ptr == 0 || count == 0 || count > 1024 {
+        return None;
+    }
+    let b = reader.resolve(bones_ptr, count * 80)?;
+    Some(
+        (0..count)
+            .map(|i| {
+                let o = i * 80;
+                Bone {
+                    name: reader.string_at(u64_le(b, o + 56)).unwrap_or_default(),
+                    parent: i16::from_le_bytes([b[o + 50], b[o + 51]]),
+                    rotation: [f32_le(b, o), f32_le(b, o + 4), f32_le(b, o + 8), f32_le(b, o + 12)],
+                    translation: [f32_le(b, o + 16), f32_le(b, o + 20), f32_le(b, o + 24)],
+                    scale: [f32_le(b, o + 32), f32_le(b, o + 36), f32_le(b, o + 40)],
+                }
+            })
+            .collect(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +517,8 @@ pub(crate) fn parse_drawable_at(
         }
     }
 
+    let skeleton = parse_skeleton_at(reader, u64_le(raw, 0x18));
+
     Ok(Drawable {
         name,
         name_hash,
@@ -483,6 +527,7 @@ pub(crate) fn parse_drawable_at(
         render_masks,
         shader_group,
         lods,
+        skeleton,
     })
 }
 
@@ -1016,11 +1061,12 @@ pub mod tests {
             render_masks: [0; 4],
             shader_group: None,
             lods: Vec::new(),
+            skeleton: None,
         }
     }
 
     /// The skeleton binding packs the bone index in its top byte and a
-    /// skin flag in its second byte (the reference tool's `Renderable.Init`).
+    /// skin flag in its second byte.
     #[test]
     fn model_bone_index_and_skin_flag_come_from_the_binding() {
         let model = |skeleton_binding| DrawableModel {

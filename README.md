@@ -24,7 +24,7 @@ Start it and you get a screen that asks *what do you want to do?* Click a card, 
 
 | | |
 |---|---|
-| **Browse the game** | Folders and archives of your own GTA V in a classic-style tree and list, including the encrypted retail `.rpf` files (the keys are worked out from your own `GTA5.exe`). Search for a file or a folder name across everything, like in the reference tool. Inside the game's own archives a notice offers **Copy to "mods" folder**, as classic modding tools does (it can be switched off in Settings). |
+| **Browse the game** | Folders and archives of your own GTA V in a classic-style tree and list, including the encrypted retail `.rpf` files (the keys are worked out from your own `GTA5.exe`). Search for a file or a folder name across everything. Inside the game's own archives a notice offers **Copy to "mods" folder**, as classic modding tools does (it can be switched off in Settings). |
 | **See a model** | Open a `.ydr`, `.ydd` or `.yft` in 3D with its textures: parts named after the skeleton's bones (`chassis`, `wheel_lf`, ...), detail levels, paint colour, normal and specular maps, glass. |
 | **Get a vehicle's real textures** | Type a spawn name like `adder` and CRCK Explorer follows the game's own texture chain from `vehicles.meta` (`adder` > `vehicles_supergt_interior` > `vehshare`), so the model shows with the textures the game gives it. |
 | **Build an add-on vehicle** | Turn your model files and metas into a **FiveM resource** or a single-player **DLC folder**, then check the result. |
@@ -35,6 +35,7 @@ Start it and you get a screen that asks *what do you want to do?* Click a card, 
 | **Archetype editor** | Open a `.ytyp` and edit its props, time archetypes and MLO interiors with every field of the real structure, undo and redo, checks that find missing models and broken portals, an editable XML view with a live syntax check, merging of another `.ytyp` with a review of every archetype, and a save that reads the file back first so nothing is lost. |
 | **Clothing packs** | Laid out like other clothing tools: your drawables on the left, the selected one in the middle, and a **3D preview** of it on the freemode body from your game. Drop `.ydd` models and `.ytd` textures (or images): they are paired by name, grouped by component, checked (missing textures, number gaps, duplicates), and built into a FiveM resource with its YMT and metas. Nothing is renumbered without asking. |
 | **Batch rename** | Rename many files at once: numbers (`001`, `002`), the texture letters of clothing (`_a_`, `_c_`, `_f_` become `_a_`, `_b_`, `_c_`), drawable numbers, find and replace (with regular expressions), prefixes, case, your own patterns. You see every new name first, conflicts block it, and there is an undo. |
+| **World map** | Fly over the whole game map in 3D: every `.ymap` of your install (about 1.6 million buildings and props), streamed in as you move, with the game's HD / LOD / SLOD levels, the DLC versions of the map, collision, the time of day and the game's own weather, sun, sky and HDR lighting. Pick, move, rotate, scale, add, copy and delete props, mend LOD links, and write your own `.ymap` maps with the right extents and flags, a manifest and LOD lights. Import Menyoo / Spooner placements. Reads the game's files only; your changes go to a project folder. |
 | **Archives (RPF)** | List, extract and build `.rpf` archives, nested ones too. In **Edit mode** (like classic modding tools) add, replace, rename and delete files inside a copy in the `mods` folder or your own archives; the game's own archives are never changed. |
 
 Everything the window does is also a command (`crck-explorer-cli ...`), so it can be scripted.
@@ -73,7 +74,7 @@ Everything the window does is also a command (`crck-explorer-cli ...`), so it ca
     crck-explorer-cli handling compare my.meta --game    # your handling beside the vanilla vehicles
     crck-explorer-cli livery add pack\ --vehicle myveh --name lspd2
     crck-explorer-cli siren check carcols.meta
-    crck-explorer-cli ycd to-xml clip.ycd             # a clip dictionary to .ycd.xml (Sollumz and CodeWalker read that)
+    crck-explorer-cli ycd to-xml clip.ycd             # a clip dictionary to .ycd.xml (the standard text form)
     crck-explorer-cli ycd from-xml clip.ycd.xml       # and back to a binary .ycd
     crck-explorer-cli ycd info clip.ycd               # the clips and animations in it
 

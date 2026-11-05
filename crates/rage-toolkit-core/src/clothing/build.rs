@@ -2,7 +2,7 @@
 //! their game names, and `fxmanifest.lua`. `plan_build` is the preview (every file that would be written, every problem);
 //! `build` writes it and refuses to overwrite anything.
 //!
-//! The YMT is written as the reference tool-layout XML, turned into a Meta file by `rage-formats`, then **read back and compared** with what
+//! The YMT is written as XML, turned into a Meta file by `rage-formats`, then **read back and compared** with what
 //! was meant, so a file that would read differently is never written. Its shape was checked against the game's own freemode YMTs
 //!; it has not been loaded by the game or FiveM.
 use super::{file_of, validate, Drawable, Issue, Kind, Project, Sev, Sex};
@@ -91,7 +91,7 @@ impl Shape {
 /// the game's names for the prop anchor points, in anchor order
 pub const ANCHOR_ENUM: [&str; 9] = ["ANCHOR_HEAD", "ANCHOR_EYES", "ANCHOR_EARS", "ANCHOR_MOUTH", "ANCHOR_LEFT_HAND", "ANCHOR_RIGHT_HAND", "ANCHOR_LEFT_WRIST", "ANCHOR_RIGHT_WRIST", "ANCHOR_HIP"];
 
-/// The YMT as XML in the reference tool's layout. `dlc_name` is the pack name (hashed in lowercase).
+/// The YMT as XML. `dlc_name` is the pack name (hashed in lowercase).
 pub fn ymt_xml(shape: &Shape, dlc_name: &str) -> String {
     let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CPedVariationInfo>\n");
     let mut line = |depth: usize, text: &str| {

@@ -1,4 +1,4 @@
-//! Name search shared by the CLI and the viewer, in the spirit of the reference tool's RPF explorer search: type part of a file
+//! Name search shared by the CLI and the viewer, like an RPF explorer search: type part of a file
 //! name or a folder name and get every match in the game archives and in folders on disk.
 //!
 //! Query syntax: words separated by spaces, all of which must match (case does not matter).

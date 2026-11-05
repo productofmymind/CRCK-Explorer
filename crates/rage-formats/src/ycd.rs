@@ -3,7 +3,7 @@
 //!
 //! A dictionary is read into plain structs ([`parse_ycd`]), written back to the binary
 //! resource ([`serialize_ycd`]), and converted to and from the `.ycd.xml` text form
-//! ([`to_xml`], [`from_xml`]) that other tools (Sollumz, CodeWalker) use.
+//! ([`to_xml`], [`from_xml`]) that other tools use.
 //!
 //! An animation is a list of *sequences*, each covering up to the animation's
 //! `sequence_frame_limit` frames. A sequence holds one *sequence data* entry per bone-track in
@@ -238,7 +238,7 @@ pub fn parse_ycd(data: &[u8]) -> Result<ClipDictionary> {
     Ok(ClipDictionary { clips, animations })
 }
 
-/// The entries of a hash table in the order the reference tool lists them: bucket by bucket,
+/// The entries of a hash table in the order the table stores them: bucket by bucket,
 /// each bucket's chain front to back. Entries are 32 bytes with the next pointer at 0x10.
 fn chain_entries(rd: &ResReader, array_va: u64, capacity: usize) -> Result<Vec<u64>> {
     let mut out = Vec::new();

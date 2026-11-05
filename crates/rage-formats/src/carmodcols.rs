@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn reads_the_retail_pso_form() {
-        let Some(dir) = std::env::var_os("RAGE_TEST_META_DIR") else { return };
+        let Some(dir) = crate::testenv::var_os("RAGE_TEST_META_DIR") else { return };
         let Ok(data) = std::fs::read(std::path::Path::new(&dir).join("carmodcols.ymt")) else { return };
         let cols = parse_carmodcols(&data).unwrap();
         assert_eq!(cols.metallic[0], VehicleModColor { name: "BLACK".into(), col: 0, spec: 10 });

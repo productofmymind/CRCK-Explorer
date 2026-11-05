@@ -81,7 +81,7 @@ impl WheelSlot {
 
 /// Maps a vehicle wheel bone tag to its slot: wheel_lf/rf are the front
 /// pair; wheel_lr/rr and the middle wheels wheel_lm1-3/rm1-3 count as rear,
-/// the same grouping the reference tool's renderer uses.
+/// the same grouping the standard renderer uses.
 pub fn wheel_slot(bone_tag: u16) -> Option<WheelSlot> {
     match bone_tag {
         27922 => Some(WheelSlot::FrontLeft),
@@ -158,7 +158,7 @@ impl Fragment {
 }
 
 /// A right-hand wheel's placement: the child's translation with the
-/// rotation replaced by a flip of X and Z, as the reference tool's renderer does.
+/// rotation replaced by a flip of X and Z.
 fn mirror_wheel(transform: &Mat4) -> Mat4 {
     let mut flipped = Mat4::identity();
     flipped.0[0] = -1.0;
@@ -510,7 +510,7 @@ mod tests {
     }
 
     /// Wheel slots that have no mesh of their own borrow the front (or rear)
-    /// wheel drawable, and right-hand wheels are mirrored, as the reference tool does.
+    /// wheel drawable, and right-hand wheels are mirrored.
     #[test]
     fn render_parts_fill_empty_wheel_slots_and_mirror_the_right_side() {
         let wheel = |name: &str| Drawable {
@@ -534,6 +534,7 @@ mod tests {
                     geometries: Vec::new(),
                 }],
             }],
+            skeleton: None,
         };
         let child = |bone_tag: u16, drawable: Option<Drawable>, x: f32| FragmentChild {
             group_index: 0,

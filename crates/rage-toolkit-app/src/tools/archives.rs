@@ -94,7 +94,7 @@ impl State {
     }
 
     fn build_card(&mut self, ui: &mut egui::Ui) {
-        ui.weak("Subfolders called *.rpf become archives inside the archive. Output is an open (unencrypted) RPF7 that classic modding tools and the reference tool read.");
+        ui.weak("Subfolders called *.rpf become archives inside the archive. Output is an open (unencrypted) RPF7 that classic modding tools read.");
         form(ui, "rpf_build", |ui| {
             row(ui, "Folder", |ui| {
                 path_field(ui, &mut self.build_dir, Pick::Folder);

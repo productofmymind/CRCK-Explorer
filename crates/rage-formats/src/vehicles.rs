@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn reads_the_retail_file() {
-        let Some(dir) = std::env::var_os("RAGE_TEST_META_DIR") else { return };
+        let Some(dir) = crate::testenv::var_os("RAGE_TEST_META_DIR") else { return };
         let Ok(data) = std::fs::read(std::path::Path::new(&dir).join("vehicles.meta")) else { return };
         let v = parse_vehicles_meta(&data).unwrap();
         assert_eq!(v.resident_txd, "vehshare");

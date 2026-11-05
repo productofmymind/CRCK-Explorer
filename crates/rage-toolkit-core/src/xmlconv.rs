@@ -1,4 +1,4 @@
-//! Models to and from the reference tool's XML: `.ydr`, `.ybn` and `.yft` both ways. A `.yft`'s XML holds its drawables
+//! Models to and from XML: `.ydr`, `.ybn` and `.yft` both ways. A `.yft`'s XML holds its drawables
 //! as editable XML and the rest of the file (physics, bounds, names, cloth) as bytes with links, so only a `<Fragment>`
 //! this tool exported can be built back (see `rage_formats::blocks::yft`).
 use anyhow::{bail, Result};

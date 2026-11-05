@@ -6,7 +6,7 @@ use rage_formats::{parse_ybn, parse_ynv, serialize_ynv};
 #[test]
 #[ignore]
 fn vanilla_cell_round_trips() {
-    let Ok(path) = std::env::var("RAGE_TEST_YNV") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YNV") else { return };
     let data = std::fs::read(&path).unwrap();
     let ynv = parse_ynv(&data).unwrap();
     let interior = ynv.polys.iter().filter(|p| p.is_interior()).count();
@@ -62,7 +62,7 @@ fn vanilla_cell_round_trips() {
 #[test]
 #[ignore]
 fn collision_parses() {
-    let Ok(path) = std::env::var("RAGE_TEST_YBN") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YBN") else { return };
     let data = std::fs::read(&path).unwrap();
     let ybn = parse_ybn(&data).unwrap();
     println!("root {:?} box {:?} .. {:?} children {}", ybn.root.kind, ybn.root.box_min, ybn.root.box_max, ybn.root.children.len());
@@ -86,7 +86,7 @@ fn collision_parses() {
 #[test]
 #[ignore]
 fn ymap_entities_parse() {
-    let Ok(path) = std::env::var("RAGE_TEST_YMAP") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YMAP") else { return };
     let data = std::fs::read(&path).unwrap();
     let entities = rage_formats::parse_ymap_entities(&data).unwrap();
     for e in &entities {
@@ -99,7 +99,7 @@ fn ymap_entities_parse() {
 #[test]
 #[ignore]
 fn ytyp_mlo_parses() {
-    let Ok(dir) = std::env::var("RAGE_TEST_MLO_DIR") else { return };
+    let Some(dir) = rage_formats::testenv::var("RAGE_TEST_MLO_DIR") else { return };
     let dir = std::path::Path::new(&dir);
     let mut names = std::collections::HashMap::new();
     for entry in std::fs::read_dir(dir.join("ydr")).unwrap().flatten() {
@@ -137,7 +137,7 @@ fn ytyp_mlo_parses() {
 #[ignore]
 fn ymap_dumps_with_every_member_named() {
     use rage_formats::{dump_meta, parse_ymap, to_xml, NameTable};
-    let Ok(path) = std::env::var("RAGE_TEST_YMAP") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YMAP") else { return };
     let data = std::fs::read(&path).unwrap();
     let ymap = parse_ymap(&data).unwrap();
     println!("name {:#010x} parent {:#010x} flags {:#x} content {:?} streaming {:?}..{:?} entities {} (mlo {})",
@@ -158,7 +158,7 @@ fn ymap_dumps_with_every_member_named() {
 #[ignore]
 fn manifest_parses() {
     use rage_formats::parse_ymf;
-    let Ok(path) = std::env::var("RAGE_TEST_YMF") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YMF") else { return };
     let data = std::fs::read(&path).unwrap();
     let (format, m) = parse_ymf(&data).unwrap();
     println!("{format:?}: {} groups, {} imap deps, {} imap deps 2, {} ityp deps 2, {} hd txd bindings, {} interiors",
@@ -174,7 +174,7 @@ fn manifest_parses() {
 #[ignore]
 fn ytyp_dumps_with_every_member_named() {
     use rage_formats::{dump_meta, parse_ytyp, to_xml, NameTable};
-    let Ok(path) = std::env::var("RAGE_TEST_YTYP") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YTYP") else { return };
     let data = std::fs::read(&path).unwrap();
     let ytyp = parse_ytyp(&data).unwrap();
     let dump = dump_meta(&data).unwrap();
@@ -194,7 +194,7 @@ fn ytyp_dumps_with_every_member_named() {
 #[ignore]
 fn path_nodes_round_trip() {
     use rage_formats::{dump_ynd_xml, ynd_from_xml, ynd_to_xml, NameTable};
-    let Ok(path) = std::env::var("RAGE_TEST_YND") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_YND") else { return };
     let path = std::path::Path::new(&path);
     let files: Vec<std::path::PathBuf> = if path.is_dir() {
         let mut v: Vec<_> = std::fs::read_dir(path).unwrap().flatten().map(|e| e.path())
@@ -248,7 +248,7 @@ fn path_nodes_round_trip() {
 #[ignore]
 fn heightmap_round_trips() {
     use rage_formats::{parse_heightmap, serialize_heightmap};
-    let Ok(path) = std::env::var("RAGE_TEST_HEIGHTMAP") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_HEIGHTMAP") else { return };
     let path = std::path::PathBuf::from(path);
     let files: Vec<std::path::PathBuf> = if path.is_dir() {
         std::fs::read_dir(&path).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
@@ -277,7 +277,7 @@ fn heightmap_round_trips() {
 #[ignore]
 fn water_xml_parses() {
     use rage_formats::parse_water_xml;
-    let Ok(path) = std::env::var("RAGE_TEST_WATER") else { return };
+    let Some(path) = rage_formats::testenv::var("RAGE_TEST_WATER") else { return };
     let text = std::fs::read_to_string(&path).unwrap();
     let water = parse_water_xml(&text).unwrap();
     println!("{} water quads, {} calming, {} wave", water.quads.len(), water.calming_quads.len(), water.wave_quads.len());
@@ -291,7 +291,7 @@ fn water_xml_parses() {
 #[test]
 #[ignore]
 fn gen9_ytd_converts_like_the_legacy_original() {
-    let (Ok(g9), Ok(lg)) = (std::env::var("RAGE_TEST_YTD_GEN9"), std::env::var("RAGE_TEST_YTD_LEGACY")) else { return };
+    let (Some(g9), Some(lg)) = (rage_formats::testenv::var("RAGE_TEST_YTD_GEN9"), rage_formats::testenv::var("RAGE_TEST_YTD_LEGACY")) else { return };
     let gen9 = std::fs::read(&g9).unwrap();
     let legacy = std::fs::read(&lg).unwrap();
     assert_eq!(rage_formats::Edition::of_file("ytd", &gen9).unwrap(), Some(rage_formats::Edition::Gen9));

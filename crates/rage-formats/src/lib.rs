@@ -5,6 +5,8 @@
 //! bytes out of an `.rpf` is the `rpf-archive` crate's job; drawing them is
 //! `rage-render`'s.
 
+#[doc(hidden)]
+pub mod testenv;
 pub mod hash;
 pub mod math;
 pub mod resource;
@@ -15,6 +17,7 @@ pub mod ycd;
 pub mod ycd_xml;
 pub mod ycd_write;
 pub mod gen9;
+pub mod drawable_lights;
 pub mod ydd;
 pub mod yft;
 pub mod ymt;

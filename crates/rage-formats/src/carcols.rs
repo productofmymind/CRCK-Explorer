@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn reads_the_retail_pso_form() {
-        let Some(dir) = std::env::var_os("RAGE_TEST_META_DIR") else { return };
+        let Some(dir) = crate::testenv::var_os("RAGE_TEST_META_DIR") else { return };
         let Ok(data) = std::fs::read(std::path::Path::new(&dir).join("carcols.ymt")) else { return };
         let c = parse_carcols(&data).unwrap();
         assert!(c.colors.len() > 150, "{}", c.colors.len());

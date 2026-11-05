@@ -136,7 +136,7 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum YcdCmd {
-    /// Binary .ycd to .ycd.xml (the text form Sollumz and CodeWalker use)
+    /// Binary .ycd to .ycd.xml (the standard text form)
     ToXml {
         input: PathBuf,
         /// default: the input name with .xml added
@@ -262,6 +262,27 @@ enum GameCmd {
         kind: SearchKindArg,
         /// stop after this many matches
         #[arg(long, default_value_t = 500)]
+        limit: usize,
+    },
+    /// Build (or refresh) the file index: every file of every game archive, kept in the cache until the game is updated
+    Index {
+        /// walk the archives again even if the saved index is current
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Search the file index (fast; builds it the first time). Same words and `*`/`?` patterns as `search`.
+    Lookup {
+        text: String,
+        /// only these extensions, e.g. --ext ydr --ext yft
+        #[arg(long)]
+        ext: Vec<String>,
+        /// only files from a top-level archive or DLC pack whose path contains this, e.g. mpheist
+        #[arg(long)]
+        source: Option<String>,
+        /// when nothing matches, show names one or two typos away
+        #[arg(long)]
+        fuzzy: bool,
+        #[arg(long, default_value_t = 200)]
         limit: usize,
     },
     /// Save one file by its full path (as printed by `find`)
@@ -689,6 +710,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
                         } else {
                             println!("{}  {}", h.path, h.size);
                         }
+                    }
+                    println!("{} match(es){}", hits.len(), if hits.len() >= limit { " (limit reached: raise --limit)" } else { "" });
+                }
+                GameCmd::Index { rebuild } => {
+                    let t = std::time::Instant::now();
+                    let ix = rage_toolkit_core::index::FileIndex::load_or_build(&g, &rage_toolkit_core::job::Job::new(), rebuild)?;
+                    println!("{} files in {} top-level archives ({:.1} s)", ix.len(), ix.sources().len(), t.elapsed().as_secs_f32());
+                }
+                GameCmd::Lookup { text, ext, source, fuzzy, limit } => {
+                    use rage_toolkit_core::index::{FileIndex, Filter};
+                    let ix = FileIndex::load_or_build(&g, &rage_toolkit_core::job::Job::new(), false)?;
+                    let filter = Filter { exts: ext.iter().map(|e| e.trim_start_matches('.').to_lowercase()).collect(), source: source.map(|s| s.to_lowercase()) };
+                    let hits = ix.find(&text, &filter, fuzzy, limit);
+                    for r in &hits {
+                        println!("{}  {}", r.path, r.size);
                     }
                     println!("{} match(es){}", hits.len(), if hits.len() >= limit { " (limit reached: raise --limit)" } else { "" });
                 }

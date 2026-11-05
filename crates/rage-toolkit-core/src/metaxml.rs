@@ -1,19 +1,19 @@
-//! A validator for the XML side of GTA V modding: `.meta` files and the reference tool-style XML (`*.ytyp.xml`, `*.ymap.xml`, ...).
+//! A validator for the XML side of GTA V modding: `.meta` files and the XML text form of game data (`*.ytyp.xml`, `*.ymap.xml`, ...).
 //!
 //! Two layers, because they answer different questions:
 //!
 //! 1. **Syntax.** A small scanner reads the text once and reports *every* well-formedness mistake with its line and column and a
 //!    way to fix it (mismatched or unclosed tags, a missing quote, an attribute with no value, a bare `&`, two roots, ...). A strict
-//!    parser such as the one in .NET (what the reference tool uses) stops at the first error; this one keeps going. To avoid false positives
+//!    parser such as the one in .NET stops at the first error; this one keeps going. To avoid false positives
 //!    the scanner never has the last word: `roxmltree` (a strict XML 1.0 parser) is run as well, and if it accepts the text every
 //!    scanner finding is dropped; if it rejects the text and the scanner found nothing, its message is reported instead.
 //! 2. **Structure.** When the text is well-formed, the root element names a structure the game knows (`CMapTypes`,
 //!    `CHandlingDataMgr`, `CVehicleModelInfoVarGlobal`, ...). Every element below it is checked against that structure's definition
-//!    from the reference tool's table (`rage-formats`' built-in schema): members that do not exist (the game ignores them, so a typo silently
+//!    from the built-in table (`rage-formats`' built-in schema): members that do not exist (the game ignores them, so a typo silently
 //!    does nothing), values that are not numbers, enum names that are not members, arrays that should hold `<Item>`s, and a few
 //!    format-specific rules (duplicate archetype names).
 //!
-//! Severities: `Error` = the game or the reference tool will fail or misread it, `Warning` = very likely a mistake, `Info` = worth knowing.
+//! Severities: `Error` = the game or an XML tool will fail or misread it, `Warning` = very likely a mistake, `Info` = worth knowing.
 use rage_formats::schema::{MetaEntryDef, MetaStructDef, PsoEntryDef, PsoStructDef};
 use rage_formats::{rage_joaat, NameTable, Schema};
 use roxmltree::{Document, Node};
@@ -66,7 +66,7 @@ pub fn check(text: &str) -> Report {
     sc.scan();
     let mut diagnostics = sc.out;
     // The game's own files break these rules and load fine (452 comments with "--", blank lines before <?xml?>, attributes with no space
-    // between them), so they are warnings: strict XML tools such as the reference tool's .NET parser refuse them.
+    // between them), so they are warnings: strict XML tools such as the .NET parser refuse them.
     for d in diagnostics.iter_mut() {
         match d.code {
             "XML_DECL_POSITION" => {
@@ -74,7 +74,7 @@ pub fn check(text: &str) -> Report {
                 d.severity = Severity::Warning;
             }
             "XML_COMMENT_DASHES" => {
-                d.message = "'--' inside a comment is against the XML rules; the game accepts it, strict XML tools (the reference tool) refuse the file".into();
+                d.message = "'--' inside a comment is against the XML rules; the game accepts it, strict XML tools refuse the file".into();
                 d.severity = Severity::Warning;
             }
             "XML_ATTR_SPACE" => {
@@ -100,7 +100,7 @@ pub fn check(text: &str) -> Report {
                 col: p.col as usize,
                 len: 1,
                 message: format!("not valid XML: {e}"),
-                fix: if namespace { "the game's own files use XInclude (xi:include) like this; elsewhere declare the prefix with xmlns:...".into() } else { "fix the XML at this position; the game and the reference tool reject the whole file".into() },
+                fix: if namespace { "the game's own files use XInclude (xi:include) like this; elsewhere declare the prefix with xmlns:...".into() } else { "fix the XML at this position; the game and strict XML tools reject the whole file".into() },
             });
         }
         Err(_) => {}
@@ -460,7 +460,7 @@ fn member_name(hash: u32) -> String {
     names().resolve(hash).into_owned()
 }
 
-/// What one member holds, whichever of the reference tool's two tables (Meta or PSO) defined it.
+/// What one member holds, whichever of the two built-in tables (Meta or PSO) defined it.
 #[derive(Debug, Clone)]
 pub enum Kind {
     Bool,
@@ -609,11 +609,11 @@ impl<'a, 'd> Structure<'a, 'd> {
             let Some(kind) = def.members.get(name) else {
                 // a different case is its own, clearer mistake
                 match def.members.keys().find(|k| k.eq_ignore_ascii_case(name)) {
-                    Some(right) => self.push(child, Severity::Info, "META_CASE", format!("<{name}> is spelled <{right}> in the reference tool's tables (the game's own files differ in case too)"), format!("write <{right}> to match the tables")),
+                    Some(right) => self.push(child, Severity::Info, "META_CASE", format!("<{name}> is spelled <{right}> in the built-in tables (the game's own files differ in case too)"), format!("write <{right}> to match the tables")),
                     None => match nearest(name, def.members.keys().map(String::as_str)) {
-                        // a near miss is probably a typo; anything else may just be newer than the reference tool's tables
+                        // a near miss is probably a typo; anything else may just be newer than the built-in tables
                         Some(n) => self.push(child, Severity::Warning, "META_UNKNOWN_MEMBER", format!("<{name}> is not a member of {}", def.name), format!("did you mean <{n}>? The game ignores members it does not know, so a misspelled one silently does nothing")),
-                        None => self.push(child, Severity::Info, "META_UNKNOWN_MEMBER", format!("<{name}> is not a member of {} in the reference tool's tables", def.name), "fine if it is new in your game version; otherwise check the spelling (the game ignores members it does not know)".into()),
+                        None => self.push(child, Severity::Info, "META_UNKNOWN_MEMBER", format!("<{name}> is not a member of {} in the built-in tables", def.name), "fine if it is new in your game version; otherwise check the spelling (the game ignores members it does not know)".into()),
                     },
                 }
                 continue;
@@ -675,11 +675,11 @@ impl<'a, 'd> Structure<'a, 'd> {
                 let text = node.text().unwrap_or("").trim();
                 if let Some((ename, valid, hashes)) = self.enum_members(*h) {
                     if !text.is_empty() && parse_int(text).is_none() && !hashes.contains(&rage_joaat(text)) {
-                        // a near miss is probably a typo; anything else may be a value newer than the reference tool's tables (the game's own
+                        // a near miss is probably a typo; anything else may be a value newer than the built-in tables (the game's own
                         // content.xml has over a thousand)
                         match nearest(text, valid.iter().map(String::as_str)) {
                             Some(n) => self.push(node, Severity::Warning, "META_BAD_ENUM", format!("'{text}' is not a value of {ename}"), format!("did you mean {n}?")),
-                            None => self.push(node, Severity::Info, "META_BAD_ENUM", format!("'{text}' is not a value of {ename} in the reference tool's tables"), format!("fine if it is new in your game version; known values include {}", valid.iter().take(6).cloned().collect::<Vec<_>>().join(", "))),
+                            None => self.push(node, Severity::Info, "META_BAD_ENUM", format!("'{text}' is not a value of {ename} in the built-in tables"), format!("fine if it is new in your game version; known values include {}", valid.iter().take(6).cloned().collect::<Vec<_>>().join(", "))),
                         }
                     }
                 }
@@ -789,7 +789,7 @@ fn domain_rules(root: &str, text: &str, out: &mut Vec<Diagnostic>) {
     }
 }
 
-/// The game reads the leading number of a malformed value (`-3.5.000` in its own door tuning file), the reference tool refuses it: a warning
+/// The game reads the leading number of a malformed value (`-3.5.000` in its own door tuning file), strict parsers refuse it: a warning
 /// when there is a number to read, an error when there is none.
 fn float_severity(v: &str) -> Severity {
     let t = v.trim();

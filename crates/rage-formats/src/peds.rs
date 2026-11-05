@@ -260,7 +260,7 @@ mod tests {
     /// holding one, reads every ped with a name and the resident dictionary.
     #[test]
     fn reads_the_retail_pso_form() {
-        let Some(dir) = std::env::var_os("RAGE_TEST_META_DIR") else { return };
+        let Some(dir) = crate::testenv::var_os("RAGE_TEST_META_DIR") else { return };
         let path = std::path::Path::new(&dir).join("peds.ymt");
         let Ok(data) = std::fs::read(&path) else { return };
         let peds = parse_peds_meta(&data).unwrap();

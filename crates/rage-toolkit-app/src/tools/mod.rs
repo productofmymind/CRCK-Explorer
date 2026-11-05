@@ -14,6 +14,7 @@ mod clothing;
 mod fivem;
 mod handling_ed;
 mod livery;
+mod mapdata;
 mod rename;
 mod siren;
 mod textures;
@@ -30,10 +31,11 @@ pub enum Page {
     Rename,
     Siren,
     Archives,
+    MapData,
 }
 
 impl Page {
-    pub const ALL: [Page; 9] = [Page::Pack, Page::Validate, Page::Handling, Page::Livery, Page::Textures, Page::Clothing, Page::Rename, Page::Siren, Page::Archives];
+    pub const ALL: [Page; 10] = [Page::Pack, Page::Validate, Page::Handling, Page::Livery, Page::Textures, Page::Clothing, Page::Rename, Page::Siren, Page::Archives, Page::MapData];
 
     /// `--tool NAME` (automated screenshots)
     pub fn from_name(s: &str) -> Option<Page> {
@@ -47,6 +49,7 @@ impl Page {
             "clothing" => Page::Clothing,
             "siren" => Page::Siren,
             "archives" => Page::Archives,
+            "mapdata" => Page::MapData,
             _ => return None,
         })
     }
@@ -62,6 +65,7 @@ impl Page {
             Page::Clothing => "Clothing pack",
             Page::Siren => "Sirens",
             Page::Archives => "Archives (RPF)",
+            Page::MapData => "Map data files",
         }
     }
 
@@ -76,6 +80,7 @@ impl Page {
             Page::Clothing => "Build a clothing pack for FiveM: drop .ydd models and .ytd textures, they are paired by name and grouped by component; check, preview, and build the resource with its YMT and metas.",
             Page::Siren => "Check the siren settings of a carcols.meta, and the calculators for angles, sequencer patterns and speeds.",
             Page::Archives => "List, extract and build RPF archives (open ones; the game's own archives are in the viewer's Files tab).",
+            Page::MapData => "Edit collision (.ybn), path nodes (.ynd), navmeshes (.ynv) and train tracks, with undo; a file is read back before it is written.",
         }
     }
 }
@@ -91,6 +96,7 @@ pub struct Tools {
     clothing: clothing::State,
     siren: siren::State,
     archives: archives::State,
+    mapdata: mapdata::State,
 }
 
 impl Tools {
@@ -106,6 +112,7 @@ impl Tools {
             clothing: Default::default(),
             siren: Default::default(),
             archives: Default::default(),
+            mapdata: Default::default(),
         }
     }
 
@@ -191,6 +198,7 @@ impl Tools {
             Page::Clothing => unreachable!("the clothing page has its own layout"),
             Page::Siren => self.siren.ui(ui, &ctx),
             Page::Archives => self.archives.ui(ui, &ctx),
+            Page::MapData => self.mapdata.ui(ui, &ctx),
         });
     }
 }

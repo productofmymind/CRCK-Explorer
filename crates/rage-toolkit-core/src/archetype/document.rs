@@ -75,7 +75,7 @@ pub fn archetype_path(i: usize) -> Path {
 }
 
 impl YtypDocument {
-    /// Open the bytes of a `.ytyp` (RSC7 Meta or PSO) or of the reference tool-style XML.
+    /// Open the bytes of a `.ytyp` (RSC7 Meta or PSO) or of its XML text form.
     pub fn open(data: &[u8], path: Option<PathBuf>) -> Result<Self> {
         let text = std::str::from_utf8(data).ok().map(|t| t.trim_start_matches('\u{feff}').trim_start());
         let mut schema = Schema::builtin().clone();
@@ -333,7 +333,7 @@ impl YtypDocument {
         MetaValue::Struct(MetaStruct { type_hash, fields })
     }
 
-    /// One line per archetype in the format of the `Spike ytyp` oracle (the reference library's own reading of the file), to compare the two.
+    /// One line per archetype in a fixed text format, to compare two readings of the file.
     pub fn oracle_summary(&self) -> String {
         // C#'s "0.###" on a float: the shortest digits that read back as the float, rounded half away from zero at 3 decimals
         fn num(v: f32) -> String {
@@ -425,7 +425,7 @@ impl YtypDocument {
         Ok(built.bytes)
     }
 
-    /// The reference tool-style XML of the whole file, or of one archetype.
+    /// The XML text form of the whole file, or of one archetype.
     pub fn to_xml(&self, archetype: Option<usize>) -> String {
         match archetype.and_then(|i| self.archetypes().get(i)) {
             Some(a) => to_xml(a, &self.names),

@@ -141,7 +141,7 @@ impl Win {
                     self.validate();
                 }
                 ui.checkbox(&mut self.live, "Live").on_hover_text("Check while typing, a moment after you stop");
-                ui.checkbox(&mut self.show_notes, "Notes").on_hover_text("Also show information-level findings (names the reference tool's tables do not know, ...)");
+                ui.checkbox(&mut self.show_notes, "Notes").on_hover_text("Also show information-level findings (names the built-in tables do not know, ...)");
             }
             if lower == "handling.meta" && ui.add_enabled(!self.dirty(), egui::Button::new("Open in the handling editor")).on_hover_text("Values with the vanilla range beside them (save first)").clicked() {
                 reqs.push(Request::Handling(self.path.clone()));

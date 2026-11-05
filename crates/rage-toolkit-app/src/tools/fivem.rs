@@ -215,7 +215,7 @@ impl State {
                             ui.weak("Drop the folder into your server's resources and add `ensure <name>` to server.cfg. Checked with the FiveM rules:");
                         }
                         Mode::Sp => {
-                            ui.weak("Next: pack x64/vehicles.rpf and dlc.rpf (Archives page, classic modding tools or the reference tool), put the result under mods/update/x64/dlcpacks/<name>/, and add the line in dlclist_entry.txt to dlclist.xml.");
+                            ui.weak("Next: pack x64/vehicles.rpf and dlc.rpf (Archives page or classic modding tools), put the result under mods/update/x64/dlcpacks/<name>/, and add the line in dlclist_entry.txt to dlclist.xml.");
                             match missing {
                                 Some(0) => {
                                     ui.colored_label(crate::theme::ok(), "Every path in content.xml exists in the tree.");

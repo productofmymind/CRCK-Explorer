@@ -1,5 +1,5 @@
-//! The `.ycd.xml` text form of a clip dictionary, in the layout the reference tool and Sollumz
-//! use, so a dictionary can go to either and come back.
+//! The `.ycd.xml` text form of a clip dictionary, in the common layout,
+//! so a dictionary can go to other tools and come back.
 
 use anyhow::{anyhow, bail, Context, Result};
 use roxmltree::{Document, Node};
@@ -9,7 +9,7 @@ use crate::ycd::*;
 
 // ─── writing ───────────────────────────────────────────────────────────────────────────────
 
-/// A float the way the reference tool prints one: the shortest text that reads back as the same value.
+/// A float as text: the shortest text that reads back as the same value.
 fn fl(v: f32) -> String {
     format!("{v}")
 }

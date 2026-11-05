@@ -317,7 +317,7 @@ impl Win {
             if ui.button("Add a folder...").on_hover_text("a folder with your own .ydr / .yft / .ytd files, used by the asset lookup").clicked() {
                 *folder = rfd::FileDialog::new().pick_folder();
             }
-            if ui.button("Export XML...").on_hover_text("the whole file as the reference tool XML").clicked() {
+            if ui.button("Export XML...").on_hover_text("the whole file as XML").clicked() {
                 if let Some(f) = rfd::FileDialog::new().add_filter("XML", &["xml"]).set_file_name("archetypes.ytyp.xml").save_file() {
                     self.message = Some(std::fs::write(&f, self.doc.to_xml(None)).map(|_| format!("Exported to {}", f.display())).map_err(|e| e.to_string()));
                 }

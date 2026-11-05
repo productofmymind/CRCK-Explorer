@@ -395,7 +395,7 @@ mod tests {
     /// that hash.
     #[test]
     fn retail_ped_names_match_its_dictionary() {
-        let Some(dir) = std::env::var_os("RAGE_TEST_PED_DIR") else { return };
+        let Some(dir) = crate::testenv::var_os("RAGE_TEST_PED_DIR") else { return };
         let dir = std::path::Path::new(&dir);
         let Ok(data) = std::fs::read(dir.join("a_m_y_acult_01.ymt")) else { return };
         let (info, _, _) = parse_ymt(&data).unwrap();

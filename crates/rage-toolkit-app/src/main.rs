@@ -15,6 +15,9 @@ mod theme;
 mod text_window;
 mod tools;
 mod ytd_window;
+mod world;
+mod world_assets;
+mod world_gpu;
 mod ytyp_window;
 
 use anyhow::Result;
@@ -122,6 +125,7 @@ enum Mode {
     Home,
     Explorer,
     Viewer,
+    World,
     Tools,
     Settings,
 }
@@ -173,6 +177,7 @@ struct App {
     /// `--ytd-window` / `--picture` (automated screenshots): floating windows to open on the first frame
     shot_windows: Vec<(u8, PathBuf)>,
     frames: u32,
+    world: world::World,
     show_game: bool,
     game_name: String,
     /// vehicle body colour for paint shaders
@@ -374,6 +379,7 @@ impl App {
             ui_shot: None,
             shot_windows: vec![],
             frames: 0,
+            world: world::World::new(),
             show_game: false,
             game_name: String::new(),
             paint: [0.62, 0.07, 0.07],
@@ -1109,7 +1115,7 @@ impl App {
         }
         if let Some(path) = self.ui_shot.clone() {
             // wait for a search, a texture lookup or a reveal that is still running
-            if !self.explorer.busy() && self.texture_job.is_none() && self.load_job.is_none() && self.vehicle_job.is_none() && !self.explorer.editing() && !self.tools.busy() {
+            if !self.explorer.busy() && self.texture_job.is_none() && self.load_job.is_none() && self.vehicle_job.is_none() && !self.explorer.editing() && !self.tools.busy() && !self.world.busy() {
                 self.frames += 1;
             }
             if self.frames == 6 {
@@ -1128,6 +1134,19 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// the World's scripted self-test feeds its mouse and key events to the window here (`--world-selftest`)
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some((events, modifiers)) = self.world.take_synthetic() {
+            // the modifier keys stay as the last step set them until the next step changes them
+            raw_input.events.push(egui::Event::ModifiersChanged(modifiers));
+            raw_input.events.extend(events);
+        }
+        // in the World tab Tab switches the mode, unless a text box is being typed in
+        if self.mode == Mode::World && !ctx.text_edit_focused() {
+            self.world.take_tab(&mut raw_input.events);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         for (kind, p) in std::mem::take(&mut self.shot_windows) {
@@ -1225,6 +1244,7 @@ impl eframe::App for App {
                 tab(ui, &mut self.mode, Mode::Home, "Home", "What do you want to do? The start screen");
                 tab(ui, &mut self.mode, Mode::Explorer, "Explorer", "Browse the game's files and your folders like classic modding tools: folders on the left, the files of the selected folder on the right");
                 tab(ui, &mut self.mode, Mode::Viewer, "Viewer", "Look at a model with its textures: parts, LOD, materials");
+                tab(ui, &mut self.mode, Mode::World, "World", "Fly around the game's map files in 3D and click what is placed there");
                 tab(ui, &mut self.mode, Mode::Tools, "Tools", "Handling editor, add-on pack creator, validator, liveries, textures, sirens, archives");
                 tab(ui, &mut self.mode, Mode::Settings, "Settings", "Themes and general preferences");
                 ui.add_space(6.0);
@@ -1326,6 +1346,17 @@ impl eframe::App for App {
             self.explorer.set_mods(self.theme_page.warn_game_files, self.theme_page.mods_dir(game_dir.as_deref()));
             let actions = self.explorer.ui(ui, self.game.as_ref());
             self.handle_actions(&ctx, actions);
+            self.frame_end(&ctx);
+            return;
+        }
+        if self.mode == Mode::World {
+            let game = self.game.clone();
+            if let Some(p) = self.world.ui(ui, game.as_ref(), frame.wgpu_render_state()) {
+                match self.full_to_loc(&p) {
+                    Ok((loc, name)) => self.open_loc(loc, name),
+                    Err(e) => self.status = format!("{p}: {e:#}"),
+                }
+            }
             self.frame_end(&ctx);
             return;
         }
@@ -1658,12 +1689,33 @@ fn main() -> eframe::Result {
     let rename_folder = raw.iter().position(|a| a == "--rename-folder").and_then(|i| raw.get(i + 1)).cloned();
     let rename_preset = raw.iter().position(|a| a == "--rename-preset").and_then(|i| raw.get(i + 1)).and_then(|n| n.parse::<usize>().ok());
     let ytyp_window = raw.iter().position(|a| a == "--ytyp-window").and_then(|i| raw.get(i + 1)).cloned();
+    // automated screenshots: --world-view x,y,z[,model name]
+    let world_move = raw.iter().position(|a| a == "--world-move").and_then(|i| raw.get(i + 1)).cloned();
+    let world_add = raw.iter().position(|a| a == "--world-add").and_then(|i| raw.get(i + 1)).cloned();
+    let world_tool = raw.iter().position(|a| a == "--world-tool").and_then(|i| raw.get(i + 1)).cloned();
+    let world_look = raw.iter().position(|a| a == "--world-look").and_then(|i| raw.get(i + 1)).cloned();
+    let world_view = raw.iter().position(|a| a == "--world-view").and_then(|i| raw.get(i + 1)).cloned();
+    let world_demo = raw.iter().position(|a| a == "--world-demo").and_then(|i| raw.get(i + 1)).cloned();
+    let world_bench = raw.iter().position(|a| a == "--world-bench").and_then(|i| raw.get(i + 1)).cloned();
+    let world_selftest = raw.iter().any(|a| a == "--world-selftest");
+    let world_tab = raw.iter().position(|a| a == "--world-tab").and_then(|i| raw.get(i + 1)).cloned();
     let text_window = raw.iter().position(|a| a == "--text-window").and_then(|i| raw.get(i + 1)).cloned();
     let args: Vec<PathBuf> = raw.iter().map(PathBuf::from).filter(|p| Path::new(p).exists() && Some(p.to_string_lossy().to_string()) != ytd_window && Some(p.to_string_lossy().to_string()) != ytyp_window && Some(p.to_string_lossy().to_string()) != clothing_folder && Some(p.to_string_lossy().to_string()) != rename_folder && Some(p.to_string_lossy().to_string()) != text_window && Some(p.to_string_lossy().to_string()) != rename_preset.map(|n| n.to_string()) && Some(p.to_string_lossy().to_string()) != picture && Some(p) != ui_shot.as_ref() && Some(p.to_string_lossy().to_string()) != theme_arg && Some(p.to_string_lossy().to_string()) != goto && Some(p.to_string_lossy().to_string()) != open_game && Some(p.to_string_lossy().to_string()) != add_folder && Some(p.to_string_lossy().to_string()) != handling_file).collect();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title("CRCK Explorer Viewer").with_drag_and_drop(true).with_icon(window_icon()),
+    // CRCK_WINDOW_SIZE=1280x1400 makes the window that size (for taller automated screenshots)
+    let size = std::env::var("CRCK_WINDOW_SIZE").ok().and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?]))).unwrap_or([1280.0, 800.0]);
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size(size).with_title("CRCK Explorer Viewer").with_drag_and_drop(true).with_icon(window_icon()),
         ..Default::default()
     };
+    // ask the GPU for block-compressed textures (BC1-BC7) when it has them: the World tab then uploads the game's textures as stored
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        let base = setup.device_descriptor.clone();
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut d = base(adapter);
+            d.required_features |= adapter.features() & eframe::wgpu::Features::TEXTURE_COMPRESSION_BC;
+            d
+        });
+    }
     eframe::run_native("CRCK Explorer Viewer", options, Box::new(move |cc| {
         let mut app = App::new(args);
         if let Some(n) = &theme_arg {
@@ -1731,6 +1783,37 @@ fn main() -> eframe::Result {
         }
         if settings_tab {
             app.mode = Mode::Settings;
+        }
+        if let Some(v) = &world_view {
+            app.mode = Mode::World;
+            let p: Vec<&str> = v.split(',').collect();
+            let n = |i: usize| p.get(i).and_then(|t| t.trim().parse::<f32>().ok()).unwrap_or(0.0);
+            app.world.queue_view(n(0), n(1), n(2), p.get(3).map(|s| s.trim().to_string()));
+            if let Some(l) = &world_look {
+                app.world.queue_look(l);
+            }
+            if let Some(a) = &world_add {
+                app.world.queue_add(a.clone(), world_tool.clone());
+            }
+            if world_selftest {
+                app.world.queue_selftest();
+            }
+            if let Some(b) = &world_bench {
+                // --world-bench 10000[,model]
+                let (n, model) = b.split_once(',').map_or((b.as_str(), None), |(n, m)| (n, Some(m.trim().to_string())));
+                if let Ok(n) = n.trim().parse::<usize>() {
+                    app.world.queue_bench(n, model);
+                }
+            }
+            if let Some(d) = &world_demo {
+                app.world.queue_demo(d.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(), world_tab.clone());
+            }
+            if let Some(m) = &world_move {
+                let d: Vec<f32> = m.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                if d.len() == 3 {
+                    app.world.queue_move([d[0], d[1], d[2]]);
+                }
+            }
         }
         if let Some(full) = &open_game {
             // same path as double-clicking the file in the Explorer

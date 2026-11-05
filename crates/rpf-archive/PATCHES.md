@@ -1,7 +1,7 @@
 # Patches to rpf-archive 0.10.0 (Unlicense, VIRUXE/rpf-archive-rs)
 
-Found by cross-reading with the reference library (R0 spike, 2026-10-26):
-1. **Writer, RPF7 binary entries**: wrote `file_size = data length` for uncompressed files. By the convention the reference tool reads (stored size > 0 = deflate-compressed, 0 = stored as-is) that made the reference tool try to inflate raw data and fail to extract every non-resource file. Now: deflate when smaller (stored size = compressed length), else stored size 0. Nested `.rpf` entries are never compressed.
+Found by cross-reading with another implementation (2026-10-26):
+1. **Writer, RPF7 binary entries**: wrote `file_size = data length` for uncompressed files. By the convention other readers use (stored size > 0 = deflate-compressed, 0 = stored as-is) that made them try to inflate raw data and fail to extract every non-resource file. Now: deflate when smaller (stored size = compressed length), else stored size 0. Nested `.rpf` entries are never compressed.
 2. **Reader**: `file_size < uncompressed_size` heuristic misreads tiny files where deflate output is larger than the input (11 byte file -> 13 byte stream). Now any `file_size > 0` is inflated (falls back to raw bytes if inflate fails).
 
 Found by the performance and robustness audit (2026-10-26):

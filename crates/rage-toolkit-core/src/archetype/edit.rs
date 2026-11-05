@@ -207,6 +207,13 @@ impl History {
         Ok(())
     }
 
+    /// The next edit starts a new undo step even if it has the same key as the last one (a drag has ended).
+    pub fn break_join(&mut self) {
+        if let Some(last) = self.done.last_mut() {
+            last.key = None;
+        }
+    }
+
     /// the file now matches the tree
     pub fn mark_saved(&mut self) {
         self.saved_at = Some(self.done.len());

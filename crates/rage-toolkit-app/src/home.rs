@@ -68,6 +68,7 @@ fn sections() -> Vec<(&'static str, Vec<Card>)> {
             "Check and unpack",
             vec![
                 c("Check a pack for mistakes", "Names that must match, missing files, FiveM size limits: before the game finds out.", GREEN, Glyph::Shield, Go::Tool(Page::Validate), false),
+                c("Map data files", "Open collision (.ybn), path nodes (.ynd), nav meshes (.ynv) and train tracks: inspect, check and save.", YELLOW, Glyph::Cube, Go::Tool(Page::MapData), false),
                 c("Archives (RPF)", "List, extract and build open RPF archives.", YELLOW, Glyph::Archive, Go::Tool(Page::Archives), false),
             ],
         ),

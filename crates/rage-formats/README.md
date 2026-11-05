@@ -25,22 +25,22 @@ rage-formats = "0.4"
 | `.yft` fragment | yes | | `parse_yft` | `Fragment`: main drawable, physics children with transforms, bone pose |
 | `.ybn` collision | yes | | `parse_ybn` | the `phBound` tree; `Ybn::triangles()` flattens it to world space |
 | `.ynv` navmesh | yes | yes | `parse_ynv`, `serialize_ynv` | `Ynv`: polygons with vertices, flags and edge adjacency, portals, points |
-| `.ynd` path nodes | yes | yes | `parse_ynd`, `serialize_ynd`, `ynd_to_xml`, `ynd_from_xml` | `Ynd`: nodes with positions, street hashes, flags and their links; junction heightmaps; the reference tool's `<NodeDictionary>` XML both ways |
+| `.ynd` path nodes | yes | yes | `parse_ynd`, `serialize_ynd`, `ynd_to_xml`, `ynd_from_xml` | `Ynd`: nodes with positions, street hashes, flags and their links; junction heightmaps; the common `<NodeDictionary>` XML both ways |
 | `.ymap` placements | yes | | `parse_ymap`, `parse_ymap_entities`, `parse_ymap_mlo_instances` | `YmapHeader` (name, parent, flags, extents); `YmapEntity` per entity, with `to_world()` and its LOD fields (`lod_dist`, `child_lod_dist`, `lod_level`, `num_children`, `parent_index`); `MloInstance` per interior, with its default entity sets |
 | `.ytyp` archetypes | yes | | `parse_ytyp` | every archetype's box and texture dictionary; each MLO's entities, named rooms, portals and entity sets |
-| `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo`: each slot's drawables and textures, and their file names by the reference tool's rules (`uppr_001_r`, `uppr_diff_001_a_whi`) |
-| `vehicles.meta` | yes | | `parse_vehicles_meta` | `VehicleInitData` per model, every member the reference tool's `VehiclesFile` reads |
+| `.ymt` ped variation | yes | | `parse_ymt` | `PedVariationInfo`: each slot's drawables and textures, and their file names by the usual rules (`uppr_001_r`, `uppr_diff_001_a_whi`) |
+| `vehicles.meta` | yes | | `parse_vehicles_meta` | `VehicleInitData` per model, every member of the game's vehicle data |
 | `carcols.ymt` / `.meta` | yes | | `parse_carcols` | `CarCols`: colours, metallic and window settings, plates, lights, sirens, mod kits with liveries, wheels, xenon colours |
 | `carvariations.ymt` / `.meta` | yes | | `parse_carvariations` | per model: colour combinations with livery flags, kits, plate probabilities |
 | `carmodcols.ymt` | yes | | `parse_carmodcols` | the mod shop colour menus |
-| `peds.ymt` / `peds.meta` | yes | | `parse_peds_meta` | `PedInitData` per ped, every member the reference tool's `PedsFile` reads |
+| `peds.ymt` / `peds.meta` | yes | | `parse_peds_meta` | `PedInitData` per ped, every member of the game's ped data |
 | `_manifest.ymf` | yes | | `parse_ymf` | `Manifest`: map/type dependencies, HD texture bindings, interior collision lists — from PSO, RBF, Meta or XML |
 | any Meta file (`ytyp`, `ymap`, `ymt`) | yes | | `dump_meta`, `to_xml`, `to_json` | the whole file as a `MetaValue` tree from its own schema, with names from `NameTable` |
 | any PSO file (`ymf`, `pso`, `ymt`) | yes | | `dump_pso`, `to_xml`, `to_json` | the same tree from the big-endian container |
 | `gtxd.ymt` / `gtxd.meta` | yes | | `parse_txd_relationships` | texture dictionary parent chain |
 | `cache_y.dat` world cache | yes | | `parse_cache_dat` | `CacheDat`: every map file's parent and extents, every placed interior (archetype, placing map, position, rotation, box), every collision file's bounds |
 | `heightmap.dat` world heightmap | yes | yes | `parse_heightmap`, `serialize_heightmap` | `WorldHeightmap`: the highest and lowest ground per cell, scaled into the file's box; `max_height_at`, `cell_size` |
-| `water.xml` water surface | yes | | `parse_water_xml` | `WaterData`: the water, calming and wave quads, as the reference tool's `Water.cs` reads them |
+| `water.xml` water surface | yes | | `parse_water_xml` | `WaterData`: the water, calming and wave quads |
 | RSC7 container | yes | yes | `prepare_rsc7`, `build_rsc7`, `build_rsc7_paged` | sections in, a valid file out; `is_fxap` names an escrowed FiveM asset instead |
 
 Hashing is `rage_joaat`, the Jenkins one-at-a-time every name in these
@@ -79,9 +79,7 @@ Three families of file share that container but differ inside:
 - **RBF** (`gtxd.ymt`, retail `_manifest.ymf`): a flat record stream with
   its own descriptor table; `rbf.rs` reads it whole.
 
-Every byte offset was ported from the reference library (`Bounds.cs`, `Nav.cs`,
-`YnvFile.cs`, `MetaTypes.cs`, `DrawableBase.cs` and friends) and checked
-against retail files.
+Every byte offset was checked against retail files.
 
 ## Examples
 
@@ -156,7 +154,7 @@ let world: Vec<_> = parse_ybn(&ybn_bytes)?.triangles().into_iter()
 ```
 
 `to_world` applies scale, the stored rotation (map entities store the
-inverse quaternion, as the reference tool's `YmapEntityDef` does) and translation.
+inverse quaternion) and translation.
 
 ### Navmesh cells, read and write
 
@@ -214,14 +212,14 @@ A cell is 512 m square on a 32×32 grid from (-8192, -8192); its area id is
 on top (`ynd_is_island_area`), streaming in over the sea cells they replace,
 and their links name the cell without it (`ynd_same_cell`). Positions are
 stored to a quarter of a metre in x and y and a 32nd in z; `set_position`
-quantises as the reference tool does. Every node's flag bits have accessors
+quantises to those steps. Every node's flag bits have accessors
 (`is_junction`, `highway`, `tunnel`, `is_disabled`, `speed`, `special`,
 `is_ped_node`, ...), as do a link's lane counts, `shortcut` and
 `dont_use_for_navigation`. The writer computes the link and heightmap
 offsets and lays the five arrays out with the same block graph
 `ResourceBuilder.Build` uses (resource version 1): a retail cell rewrites to
 the same nodes, links and junctions and serialises byte-identically the
-second time. `ynd_to_xml`/`ynd_from_xml` are the reference tool's `<NodeDictionary>`
+second time. `ynd_to_xml`/`ynd_from_xml` read and write the common `<NodeDictionary>`
 XML; `dump_ynd_xml`/`build_ynd_from_xml` go straight from and to bytes.
 A retail cell survives parse, serialize, parse with every polygon, edge,
 flag, portal and point equal, and a second serialize is byte-identical.
@@ -283,7 +281,7 @@ cache file, so a complete list of placements still has to read those maps.
 
 `heightmap.dat` and `heightmapheistisland.dat` (in `update.rpf/common/data/levels/gta5`)
 are a coarse grid of the highest and lowest ground, one byte each per cell,
-read and written as the reference tool's `HeightmapFile` does; `water.xml` and
+read and written as the game stores them; `water.xml` and
 `water_heistisland.xml` (`common.rpf` and `update.rpf` under
 `data/levels/gta5`) are the water quads the game draws.
 
@@ -310,7 +308,7 @@ use rage_formats::{dump_meta, dump_pso, is_pso, to_json, to_xml, NameTable};
 let dump = if is_pso(&bytes) { dump_pso(&bytes)? } else { dump_meta(&bytes)? };
 for w in &dump.warnings { eprintln!("{w}"); }      // anything left undecoded, never an error
 let names = NameTable::core();                     // built-in structure/member/enum names
-print!("{}", to_xml(&dump.root, &names));          // the reference tool's XML layout, diffable against its export
+print!("{}", to_xml(&dump.root, &names));          // the common XML layout, diffable against other exports
 let json = to_json(&dump.root, &names).pretty(2);  // {"$type": "CMapData", "name": "map1", ...}
 ```
 
@@ -318,8 +316,7 @@ The tree is `MetaValue`: structures with hashed member names, arrays,
 vectors, hashes, strings, enums and flags. `MetaStruct::field("name")`
 looks a member up by name. Hashes with no known name print as
 `hash_XXXXXXXX`; the built-in list names every structure, member and enum
-The reference tool knows (some 20,000 of the game's own schema names, compiled
-from its `MetaNames` table and each verified against its hash — `itemType` names like
+The crate knows (some 20,000 of the game's own schema names, each verified against its hash — `itemType` names like
 `CVehicleModelColorIndices` never appear in any file and can only come from
 such a table), and `NameTable::add_list` takes more (one name per line), so
 content names — archetypes, texture dictionaries — can be supplied by
@@ -330,7 +327,7 @@ The vehicle and ped metadata readers above are built on that tree:
 XML layout into one `MetaValue`, and the `Fields` helpers read members by
 name whichever form they came in (an XML `<indices>0 1 2</indices>` and a
 PSO byte array both come back as bytes; an enum by its name or its value).
-`meta_enum!` defines an enum with the reference tool's member names and values
+`meta_enum!` defines an enum with the game's member names and values
 plus an `Unknown` for anything else, as `VehicleModBone` and the other
 carcols enums are.
 
@@ -343,8 +340,8 @@ the offsets themselves.
 
 ### Drawables and bounds from XML
 
-`.ydr` drawables and `.ybn` bounds convert to and from the reference tool's XML
-through a port of its resource block graph (`blocks`, an arena of blocks
+`.ydr` drawables and `.ybn` bounds convert to and from the common XML
+through a resource block graph (`blocks`, an arena of blocks
 that point at each other by `BlockId`, laid into RSC7 pages the way
 `ResourceBuilder.Build` does):
 
@@ -363,26 +360,25 @@ let xml = dump_ydr_xml(&bytes, &NameTable::core(), Some(dds_dir))?;
 let rebuilt = build_ydr_from_xml(&xml, Some(dds_dir))?;
 ```
 
-Parity: build accepts every valid document the reference tool's `XmlYdr.GetYdr` /
-`XmlYbn.GetYbn` accept; dump emits everything `YdrXml.GetXml` / `YbnXml.GetXml`
-emit. Legacy PC resources only (a Gen9 `.ytd` converts with
+Parity: build accepts every valid document of the common XML layout; dump emits
+everything that layout holds. Legacy PC resources only (a Gen9 `.ytd` converts with
 `convert_ytd_to_legacy`; see `gen9::Edition`). Writing re-derives what a file read from disk
 lacks (a bound's BVH and polygon order), so take any comparison XML from the
 graph after `write_ydr` / `write_ybn`.
 
-Where the reference tool guesses, build is stricter and stops with an error: an unknown
-or missing bound `type` (the reference tool makes a sphere), a vertex row with fewer
+Where other tools guess, build is stricter and stops with an error: an unknown
+or missing bound `type` a vertex row with fewer
 values than its layout needs, a `CompositeTransform` that is not 16 numbers, a
 composite inside a composite, a `<DrawableModelsX>` list next to a LOD list,
 a count too big for its 8- or 16-bit field (65536 vertices in a geometry, say),
 an XML whose root is not `<Drawable>` (drawable) or `<BoundsFile>` / `<Bounds>`
-(bound). What the reference tool accepts silently but the game may not comes back as
+(bound). What other tools accept silently but the game may not comes back as
 `Built::warnings`: a shader parameter naming a texture that is not embedded
 (the game looks it up in the archetype's texture dictionary) and a bone
 without a name.
 
-A dump→build cycle is not bit-exact for bounds, exactly as the reference tool's own
-import is not: a build may move a bound's vertices by up to one quantum per
+A dump→build cycle is not bit-exact for bounds, exactly as other tools'
+imports are not: a build may move a bound's vertices by up to one quantum per
 axis (they are stored as 16-bit multiples of the quantum, which is recomputed
 from the box), and the drift can add up over repeated cycles; a `GeometryBVH`'s
 polygons are put back in the order its rebuilt BVH gives them. The `_checked`
@@ -394,7 +390,7 @@ called: path separators, `: * ? " < > |` and control characters become `_`
 
 A corrupt or crafted file is an error, never a panic: a pointer that lands on a
 block already read as another type is refused (a plain array or vertex data
-there is read again on its own, as the reference tool's `ResourceDataReader` does, which some modded
+there is read again on its own, which some modded
 files need).
 
 ## Features

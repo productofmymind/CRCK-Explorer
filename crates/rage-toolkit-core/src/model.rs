@@ -53,10 +53,14 @@ const VEHICLE_SHADERS: &[&str] = &[
     "normal_spec_alpha", "spec", "default", "trees", "decal", "glass", "glass_pv",
 ];
 
+/// the names of the map's shaders (`default_terrain_wet`, `spec_decal`, `normal_spec_detail`, `trees_lod` ...): without them a decal looked like an opaque
+/// surface. The list is the shader names of the game's own shader files, one per line.
+const WORLD_SHADERS: &str = include_str!("shader_names.txt");
+
 /// the shader's name when it is a known one
 pub fn shader_name(hash: u32) -> Option<&'static str> {
     static MAP: std::sync::OnceLock<std::collections::HashMap<u32, &'static str>> = std::sync::OnceLock::new();
-    MAP.get_or_init(|| VEHICLE_SHADERS.iter().map(|n| (rage_formats::rage_joaat(n), *n)).collect()).get(&hash).copied()
+    MAP.get_or_init(|| VEHICLE_SHADERS.iter().copied().chain(WORLD_SHADERS.lines().filter(|l| !l.is_empty())).map(|n| (rage_formats::rage_joaat(n), n)).collect()).get(&hash).copied()
 }
 
 fn kind_of(path: &Path) -> Result<DrawableKind> {
@@ -196,10 +200,18 @@ pub struct MeshPart {
     pub normals: Vec<[f32; 3]>,
     pub tangents: Vec<[f32; 4]>,
     pub uvs: Vec<[f32; 2]>,
+    /// the second texture coordinates (the terrain blend mask's)
+    pub uvs1: Vec<[f32; 2]>,
+    /// A terrain shader's other layers: layer 1, 2 and 3 textures and the blend mask (`lookupSampler`), when it has them (layer 0 is `diffuse`)
+    pub terrain: Option<[String; 4]>,
+    /// the first vertex colour (baked ambient occlusion and tint), 0-255 per channel
+    pub colors: Vec<[u8; 4]>,
     pub indices: Vec<u32>,
     /// For a skinned geometry: the skeleton bone most of its vertices follow (the heaviest blend weight of each vertex, mapped
     /// through the geometry's bone palette). `None` for a rigid one.
     pub skin_bone: Option<usize>,
+    /// the model's render mask (the low bit set: a model that is drawn; clear: a proxy for reflections or shadows, which is not drawn)
+    pub render_mask: u16,
 }
 
 /// The bone most vertices of a skinned geometry follow.
@@ -219,6 +231,16 @@ fn dominant_bone(vs: &[rage_formats::ydd::UnifiedVertex], palette: &[u16]) -> Op
     votes.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))).map(|(b, _)| b)
 }
 
+/// The first texture a shader names that is not a normal, specular, detail, environment or dirt map: the picture to show when the
+/// shader calls its albedo something other than `DiffuseSampler` / `TextureSampler` (tree, terrain and foliage shaders do).
+fn other_texture(d: &Drawable, shader_id: u16) -> Option<String> {
+    let skip: Vec<u32> = ["bumpsampler", "specsampler", "detailsampler", "environmentsampler", "dirtsampler", "heightsampler", "reflectionsampler"].iter().map(|n| rage_formats::rage_joaat(n)).collect();
+    d.shader(shader_id)?.parameters.iter().find_map(|p| match &p.value {
+        ShaderParameterValue::Texture { name, .. } if !name.is_empty() && !skip.contains(&p.name_hash) => Some(name.clone()),
+        _ => None,
+    })
+}
+
 /// Triangles of one drawable at `level`. Each part carries the bone index and skinning flag of its model.
 pub fn drawable_meshes(d: &Drawable, name: &str, level: LodLevel) -> Vec<(MeshPart, usize, bool)> {
     let mut out = vec![];
@@ -230,6 +252,12 @@ pub fn drawable_meshes(d: &Drawable, name: &str, level: LodLevel) -> Vec<(MeshPa
             if vs.is_empty() || ib.indices.iter().any(|&i| i as usize >= vs.len()) {
                 continue;
             }
+            let tex = |n: &str| d.texture_parameter(g.shader_id, rage_formats::rage_joaat(n)).filter(|t| !t.is_empty()).map(str::to_string);
+            // a terrain shader blends four layers by a mask; its first layer is the part's picture
+            let terrain = match (tex("texturesampler_layer0"), tex("texturesampler_layer1"), tex("texturesampler_layer2"), tex("texturesampler_layer3"), tex("lookupsampler")) {
+                (Some(l0), Some(l1), Some(l2), Some(l3), Some(m)) => Some((l0, [l1, l2, l3, m])),
+                _ => None,
+            };
             out.push((
                 MeshPart {
                     drawable: name.to_string(),
@@ -237,7 +265,9 @@ pub fn drawable_meshes(d: &Drawable, name: &str, level: LodLevel) -> Vec<(MeshPa
                     model: mi,
                     geometry: gi,
                     shader_id: g.shader_id,
-                    diffuse: d.diffuse_texture_name(g.shader_id).map(str::to_string),
+                    diffuse: terrain.as_ref().map(|t| t.0.clone()).or_else(|| d.diffuse_texture_name(g.shader_id).map(str::to_string)).or_else(|| other_texture(d, g.shader_id)),
+                    terrain: terrain.map(|t| t.1),
+                    uvs1: vs.iter().map(|v| [v.texcoord1.x, v.texcoord1.y]).collect(),
                     bump: d.texture_parameter(g.shader_id, rage_formats::rage_joaat("bumpsampler")).map(str::to_string),
                     spec: d.texture_parameter(g.shader_id, rage_formats::rage_joaat("specsampler")).map(str::to_string),
                     shader: d.shader(g.shader_id).map(|sh| shader_name(sh.name_hash).map(str::to_string).unwrap_or_else(|| format!("hash_{:08X}", sh.name_hash))).unwrap_or_default(),
@@ -245,8 +275,10 @@ pub fn drawable_meshes(d: &Drawable, name: &str, level: LodLevel) -> Vec<(MeshPa
                     positions: vs.iter().map(|v| [v.position.x, v.position.y, v.position.z]).collect(),
                     normals: vs.iter().map(|v| [v.normal.x, v.normal.y, v.normal.z]).collect(),
                     uvs: vs.iter().map(|v| [v.texcoord0.x, v.texcoord0.y]).collect(),
+                    colors: vs.iter().map(|v| v.color0).collect(),
                     indices: ib.indices.clone(),
                     skin_bone: if m.is_skinned() { dominant_bone(&vs, &g.bone_ids) } else { None },
+                    render_mask: m.render_mask_flags,
                 },
                 m.bone_index(),
                 m.is_skinned(),
@@ -461,3 +493,19 @@ pub fn export_obj(model: &Path, out_dir: &Path, ytd: Option<&Path>, level: LodLe
     fs::write(out_dir.join(format!("{stem}.mtl")), mtl)?;
     Ok(format!("{} part(s), {verts} vertices, {tris} triangles, {} texture file(s) -> {}", parts.len(), written.len(), out_dir.join(format!("{stem}.obj")).display()))
 }
+
+#[cfg(test)]
+mod shader_name_tests {
+    use super::*;
+
+    #[test]
+    fn the_maps_shaders_have_names_so_decals_are_found() {
+        for n in ["spec_decal", "normal_spec_decal", "decal_emissive_only", "default_terrain_wet", "normal_spec_detail", "trees_lod2", "emissive"] {
+            assert_eq!(shader_name(rage_formats::rage_joaat(n)), Some(n), "{n}");
+        }
+        // the vehicle shaders still resolve
+        assert_eq!(shader_name(rage_formats::rage_joaat("vehicle_paint1")), Some("vehicle_paint1"));
+        assert_eq!(shader_name(1), None);
+    }
+}
+

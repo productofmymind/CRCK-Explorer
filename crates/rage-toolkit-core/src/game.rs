@@ -393,6 +393,19 @@ impl Game {
     }
 
     /// Changes whenever the game is updated (size and date of GTA5.exe and update.rpf): cached results are only good for the same stamp.
+    pub fn stamp(&self) -> String {
+        self.game_stamp()
+    }
+
+    /// Every file under one top-level archive (see [`Game::top_level_archives`]), nested archives included.
+    pub fn files_in(&self, top: &str) -> Vec<GameFile> {
+        let mut out = vec![];
+        if let Ok(ar) = self.archive(top) {
+            search(&ar, top, &|_| true, &mut out, 0);
+        }
+        out
+    }
+
     fn game_stamp(&self) -> String {
         let one = |p: PathBuf| fs::metadata(p).map(|m| format!("{}:{}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0))).unwrap_or_default();
         format!("v1 {} {}", one(self.dir.join("GTA5.exe")), one(self.dir.join("update/update.rpf")))
