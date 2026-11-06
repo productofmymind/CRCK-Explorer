@@ -86,7 +86,7 @@ Every feature, step by step: [TUTORIAL.md](TUTORIAL.md).
 
 Prebuilt zips are on the **Releases** page (`crck-explorer-<version>-windows-x64.zip`, with a `SHA256SUMS` file to check it against). Unzip anywhere. The zip holds:
 
-- `crck-explorer.exe`: the window (double-click it)
+- `CRCK-Explorer.exe`: the window (double-click it)
 - `crck-explorer-cli.exe`: the command line
 - `README.md`, `TUTORIAL.md` and `LICENSE`
 
@@ -94,7 +94,7 @@ Windows 10 or 11, 64-bit, with a normal graphics driver (DirectX 12 or Vulkan). 
 
 ### Antivirus warnings (false positives)
 
-Windows Defender or another antivirus may flag `crck-explorer.exe` (for example as `Trojan:Win32/Bearfoos.A!ml`). **This is most likely a false positive, but do not just take our word for it. You can check:**
+Windows Defender or another antivirus may flag `CRCK-Explorer.exe` (for example as `Trojan:Win32/Bearfoos.A!ml`). **This is most likely a false positive, but do not just take our word for it. You can check:**
 
 - **Why it happens:** the exes are new, unsigned and not yet known to antivirus vendors. Names ending in `!ml` are machine-learning guesses based on how a program behaves, not a match with known malware. A program that uses the shell and the clipboard, reads game files and deletes files (the Recycle Bin option) can look like that to a guess. Unsigned Rust programs are flagged like this often.
 - **What it does not do:** CRCK Explorer has no networking code at all: no downloads, no uploads, no telemetry, no update check. It does not touch the registry or run in the background. The only programs it starts are Windows Explorer (to show a folder) and its own viewer. Outside the files you open, it reads your GTA V folders and, when you paste into a text box, the clipboard.
@@ -109,7 +109,7 @@ We cannot code-sign the releases (certificates are paid). If you do not trust a 
 
 Install Rust (stable, MSVC toolchain) and the Visual Studio Build Tools with the *Desktop development with C++* workload. **Build from PowerShell**, not Git Bash: Git Bash's own `link.exe` comes first on the path and breaks linking.
 
-    cargo build --release -p crck-explorer-cli -p rage-toolkit-app    # target\release\crck-explorer-cli.exe and crck-explorer.exe
+    cargo build --release -p crck-explorer-cli -p rage-toolkit-app    # target\release\crck-explorer-cli.exe and CRCK-Explorer.exe
     cargo test --workspace                                # tests that need real game files skip themselves
 
 For self-contained exes like the releases, set `$env:RUSTFLAGS = "-C target-feature=+crt-static"` first.

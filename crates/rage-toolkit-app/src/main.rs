@@ -1296,6 +1296,12 @@ impl eframe::App for App {
         if self.mode == Mode::Settings {
             let game_dir = self.game.as_ref().map(|g| g.dir.clone());
             egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg()).inner_margin(egui::Margin::symmetric(28, 16))).show(ui, |ui| self.theme_page.ui(ui, &mut self.show_home, game_dir.as_deref()));
+            if let Some(d) = self.theme_page.new_game_dir.take() {
+                // the folder is saved already; reload the game and the Explorer's game root from it
+                self.game = rage_toolkit_core::game::Game::open(Some(&d)).ok();
+                self.explorer = explorer::Explorer::new(self.game.as_ref());
+                self.status = format!("GTA V folder: {}", d.display());
+            }
             self.frame_end(&ctx);
             return;
         }

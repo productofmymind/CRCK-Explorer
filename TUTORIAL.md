@@ -1,6 +1,6 @@
 # CRCK Explorer tutorial
 
-What every part of CRCK Explorer does and how to use it. The window (`crck-explorer.exe`) is the main way in; everything it does is also a command in `crck-explorer-cli.exe`, shown under each feature where one exists.
+What every part of CRCK Explorer does and how to use it. The window (`CRCK-Explorer.exe`) is the main way in; everything it does is also a command in `crck-explorer-cli.exe`, shown under each feature where one exists.
 
 Contents: [Getting started](#getting-started) · [The four modes](#the-four-modes) · [Explorer](#explorer) · [Viewer](#viewer) · [A vehicle from the game](#a-vehicle-from-the-game) · [Texture dictionaries (YTD)](#texture-dictionaries-ytd) · [Images to YTD](#images-to-ytd) · [Add-on vehicle pack](#add-on-vehicle-pack) · [Check a pack](#check-a-pack) · [Handling editor](#handling-editor) · [Liveries](#liveries) · [Sirens](#sirens) · [Archetype editor](#archetype-editor-ytyp) · [Clothing pack](#clothing-pack) · [Batch rename](#batch-rename) · [Archives (RPF)](#archives-rpf) · [The "mods" folder](#the-mods-folder) · [Text editor and meta validator](#text-editor-and-meta-validator) · [Settings](#settings) · [Safety rules](#safety-rules) · [Limits](#known-limits)
 
@@ -8,8 +8,8 @@ Contents: [Getting started](#getting-started) · [The four modes](#the-four-mode
 
 ## Getting started
 
-1. Unzip the release anywhere. You get `crck-explorer.exe` (the window), `crck-explorer-cli.exe` (the command line) and this documentation. Nothing to install; no .NET or Visual C++ runtime needed.
-2. Double-click `crck-explorer.exe`. (Double-clicking the CLI exe also opens the window.) The exes are not code-signed, so SmartScreen may warn the first time: **More info > Run anyway**.
+1. Unzip the release anywhere. You get `CRCK-Explorer.exe` (the window), `crck-explorer-cli.exe` (the command line) and this documentation. Nothing to install; no .NET or Visual C++ runtime needed.
+2. Double-click `CRCK-Explorer.exe`. (Double-clicking the CLI exe also opens the window.) The exes are not code-signed, so SmartScreen may warn the first time: **More info > Run anyway**.
 3. **Your GTA V folder** is found by itself (Steam, Rockstar and Epic locations on every drive). The Home screen says whether it was found. To point at another place:
 
 ```

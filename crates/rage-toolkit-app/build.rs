@@ -1,4 +1,4 @@
-//! Puts the logo and a version block into crck-explorer.exe (what Explorer and the taskbar show). Windows only.
+//! Puts the logo and a version block into CRCK-Explorer.exe (what Explorer and the taskbar show). Windows only.
 use std::{env, fs, path::PathBuf};
 
 fn main() {
@@ -25,8 +25,8 @@ FILETYPE 0x1
     BLOCK "040904b0" {{
       VALUE "FileDescription", "CRCK Explorer Viewer"
       VALUE "ProductName", "CRCK Explorer"
-      VALUE "InternalName", "crck-explorer"
-      VALUE "OriginalFilename", "crck-explorer.exe"
+      VALUE "InternalName", "CRCK-Explorer"
+      VALUE "OriginalFilename", "CRCK-Explorer.exe"
       VALUE "FileVersion", "{version}"
       VALUE "ProductVersion", "{version}"
     }}

@@ -5,7 +5,7 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [[bin]]
-name = "crck-explorer"
+name = "CRCK-Explorer"
 path = "src/main.rs"
 
 [dependencies]

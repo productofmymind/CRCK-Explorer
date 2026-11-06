@@ -20,6 +20,8 @@ pub struct Page {
     pub warn_game_files: bool,
     /// the "mods" folder chosen here; None = `<game>\mods`
     custom_mods_dir: Option<std::path::PathBuf>,
+    /// a GTA V folder just chosen and saved here; the app takes it and reloads the game
+    pub new_game_dir: Option<std::path::PathBuf>,
 }
 
 impl Page {
@@ -39,6 +41,35 @@ impl Page {
             rename_to: String::new(),
             warn_game_files: settings::warn_game_files(&file),
             custom_mods_dir: settings::mods_dir(&file),
+            new_game_dir: None,
+        }
+    }
+
+    /// Settings > GTA V folder: where the game is, found automatically or chosen by hand.
+    fn game_dir_ui(&mut self, ui: &mut egui::Ui, game_dir: Option<&std::path::Path>) {
+        section(ui, "GTA V folder");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Game folder:");
+            match game_dir {
+                Some(d) => ui.label(RichText::new(d.display().to_string()).monospace()),
+                None => ui.label(RichText::new("GTA V was not found: choose the folder that holds GTA5.exe").color(theme::dim())),
+            };
+        });
+        if ui.button("Change...").on_hover_text("Choose the folder that holds GTA5.exe and x64e.rpf").clicked() {
+            if let Some(d) = rfd::FileDialog::new().set_title("The GTA V folder").pick_folder() {
+                self.message = Some(match rage_toolkit_core::game::save_game_dir(&d) {
+                    Ok(()) => {
+                        self.new_game_dir = Some(d.clone());
+                        Ok(format!("GTA V folder set to {}.", d.display()))
+                    }
+                    Err(e) => Err(e.to_string()),
+                });
+            }
+        }
+        match &self.message {
+            Some(Ok(m)) if m.starts_with("GTA V folder") => drop(ui.label(m)),
+            Some(Err(m)) if m.contains("GTA V folder (") => drop(ui.colored_label(theme::err(), m)),
+            _ => {}
         }
     }
 
@@ -182,6 +213,9 @@ impl Page {
             if ui.checkbox(show_home, "Show the Home screen when CRCK Explorer starts").on_hover_text("Off: CRCK Explorer starts in the Explorer. The Home tab brings the screen back.").changed() {
                 settings::save_show_home(&settings::path(), *show_home);
             }
+            ui.add_space(14.0);
+
+            self.game_dir_ui(ui, game_dir);
             ui.add_space(14.0);
 
             self.game_files_ui(ui, game_dir);
