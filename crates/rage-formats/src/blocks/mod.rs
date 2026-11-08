@@ -18,6 +18,7 @@ pub mod texture;
 pub mod vertex;
 pub mod xml;
 pub mod ybn;
+pub mod ydd;
 pub mod ydr;
 pub mod yft;
 pub mod yft_xml;

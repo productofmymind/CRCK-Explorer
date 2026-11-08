@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 use image::imageops::{resize, FilterType};
 use rage_formats::{
     texture_encode::{auto_format, encode_texture},
-    ytd::serialize_ytd,
+    ytd::{serialize_ytd, YtdTexture},
 };
 pub use rage_formats::texture_encode::EncodeFormat;
 use std::{fs, path::Path};
@@ -89,12 +89,8 @@ pub(crate) fn encode_format_of(f: rage_formats::ytd::TextureFormat) -> Option<En
     })
 }
 
-/// Replace the texture called `name` in `ytd_in` with `src` (a .dds used as is, or any image), write the result to `out`.
-/// A Gen9 YTD is converted to Legacy on the way (the output is always Legacy). Returns a one-line description.
-pub fn replace_texture(ytd_in: &Path, name: &str, src: &Path, out: &Path, opts: ReplaceOpts) -> Result<String> {
-    let (mut textures, edition) = crate::pipeline::read_ytd(ytd_in)?;
-    let idx = textures.iter().position(|t| t.name.eq_ignore_ascii_case(name)).with_context(|| format!("no texture named '{name}' in {}", ytd_in.display()))?;
-    let old = textures[idx].clone();
+/// The texture that replaces `old`: `src` (a .dds used as is, or any image encoded per `opts`), with `old`'s name and hash.
+pub fn replacement_for(old: &YtdTexture, src: &Path, opts: ReplaceOpts) -> Result<YtdTexture> {
     let is_dds = src.extension().map(|e| e.eq_ignore_ascii_case("dds")).unwrap_or(false);
     let mut new = if is_dds {
         rage_formats::dds::parse_dds(&fs::read(src)?).with_context(|| format!("reading {}", src.display()))?
@@ -112,6 +108,16 @@ pub fn replace_texture(ytd_in: &Path, name: &str, src: &Path, out: &Path, opts: 
     };
     new.name = old.name.clone();
     new.name_hash = old.name_hash;
+    Ok(new)
+}
+
+/// Replace the texture called `name` in `ytd_in` with `src` (a .dds used as is, or any image), write the result to `out`.
+/// A Gen9 YTD is converted to Legacy on the way (the output is always Legacy). Returns a one-line description.
+pub fn replace_texture(ytd_in: &Path, name: &str, src: &Path, out: &Path, opts: ReplaceOpts) -> Result<String> {
+    let (mut textures, edition) = crate::pipeline::read_ytd(ytd_in)?;
+    let idx = textures.iter().position(|t| t.name.eq_ignore_ascii_case(name)).with_context(|| format!("no texture named '{name}' in {}", ytd_in.display()))?;
+    let old = textures[idx].clone();
+    let new = replacement_for(&old, src, opts)?;
     let msg = format!("{}: {}x{} {:?} -> {}x{} {:?}{}", old.name, old.width, old.height, old.format, new.width, new.height, new.format, if edition == Some(rage_formats::gen9::Edition::Gen9) { " (Gen9 file written as Legacy)" } else { "" });
     textures[idx] = new;
     fs::write(out, serialize_ytd(&textures)?)?;

@@ -405,7 +405,7 @@ pub struct Optimized {
     pub target_met: Option<bool>,
 }
 
-fn encode_format_of(f: TextureFormat) -> Option<EncodeFormat> {
+pub(crate) fn encode_format_of(f: TextureFormat) -> Option<EncodeFormat> {
     Some(match f {
         TextureFormat::DXT1 => EncodeFormat::Bc1,
         TextureFormat::DXT3 | TextureFormat::DXT5 => EncodeFormat::Bc3,
@@ -508,15 +508,15 @@ fn plan_bytes(t: &YtdTexture, p: &Plan) -> usize {
     }
 }
 
-/// halve the biggest textures until the total fits, or nothing more can shrink
-fn shrink_to_target(src: &[YtdTexture], plans: &mut [Plan], opts: &OptimizeOptions, target: u64) {
+/// halve the biggest eligible textures until the total fits, or nothing more can shrink
+fn shrink_to_target(src: &[YtdTexture], plans: &mut [Plan], opts: &OptimizeOptions, target: u64, eligible: &[bool]) {
     loop {
         let sizes: Vec<usize> = src.iter().zip(plans.iter()).map(|(t, p)| plan_bytes(t, p)).collect();
         if sizes.iter().sum::<usize>() as u64 <= target {
             return;
         }
         let pick = (0..src.len())
-            .filter(|&i| plans[i].w.max(plans[i].h) >= 2 * MIN_SHRINK_SIDE && (opts.format_override.is_some() || encode_format_of(src[i].format).is_some()))
+            .filter(|&i| eligible[i] && plans[i].w.max(plans[i].h) >= 2 * MIN_SHRINK_SIDE && (opts.format_override.is_some() || encode_format_of(src[i].format).is_some()))
             .max_by_key(|&i| sizes[i]);
         let Some(i) = pick else { return };
         plans[i] = plan_for(&src[i], opts, (halve(plans[i].w), halve(plans[i].h)));
@@ -555,18 +555,24 @@ fn describe(t: &YtdTexture, n: &YtdTexture, p: &Plan, warn: Option<&str>) -> Opt
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
-/// Shrink a YTD. A texture that no option touches is copied unchanged (same pixels, same bytes). Names are kept.
-/// Order of work: cap the size, re-encode to `format_override`, drop small mips, then (if asked) shrink to `target_bytes`.
-pub fn optimize(input: &Path, out: &Path, opts: &OptimizeOptions) -> Result<Optimized> {
+/// The work of [`optimize`] on a list of textures, wherever they come from (a `.ytd`, or the dictionaries embedded in a
+/// `.ydd`): the new textures, in the same order, and what changed in each. Only textures with `eligible[i]` set are
+/// touched; the others come back unchanged (same pixels) but still count towards `target_bytes`.
+pub fn optimize_textures(src: &[YtdTexture], opts: &OptimizeOptions, eligible: &[bool]) -> Result<(Vec<YtdTexture>, Vec<TextureChange>)> {
     if opts.max_size.is_some_and(|m| m < 4) {
         bail!("the size cap must be at least 4");
     }
-    let src = load(input)?;
-    let file_before = fs::metadata(input)?.len();
+    if eligible.len() != src.len() {
+        bail!("{} eligibility flags for {} textures", eligible.len(), src.len());
+    }
     let mut plans: Vec<Plan> = src
         .iter()
-        .map(|t| {
+        .zip(eligible)
+        .map(|(t, &ok)| {
             let (w, h) = (t.width as u32, t.height as u32);
+            if !ok {
+                return Plan { w, h, format: t.format, levels: t.levels, reencode: false, skipped: false };
+            }
             let size = match opts.max_size {
                 Some(cap) if w.max(h) > cap => capped(w, h, cap, opts.pow2),
                 _ => (w, h),
@@ -575,7 +581,7 @@ pub fn optimize(input: &Path, out: &Path, opts: &OptimizeOptions) -> Result<Opti
         })
         .collect();
     if let Some(target) = opts.target_bytes {
-        shrink_to_target(&src, &mut plans, opts, target);
+        shrink_to_target(src, &mut plans, opts, target, eligible);
     }
 
     let jobs: Vec<usize> = (0..src.len()).filter(|&i| plans[i].reencode).collect();
@@ -597,6 +603,18 @@ pub fn optimize(input: &Path, out: &Path, opts: &OptimizeOptions) -> Result<Opti
         changes.push(TextureChange { before: row_of(t, None), after: row_of(&n, describe(t, &n, p, warn)) });
         textures.push(n);
     }
+    Ok((textures, changes))
+}
+
+/// Shrink a YTD. A texture that no option touches is copied unchanged (same pixels, same bytes). Names are kept.
+/// Order of work: cap the size, re-encode to `format_override`, drop small mips, then (if asked) shrink to `target_bytes`.
+pub fn optimize(input: &Path, out: &Path, opts: &OptimizeOptions) -> Result<Optimized> {
+    if opts.max_size.is_some_and(|m| m < 4) {
+        bail!("the size cap must be at least 4");
+    }
+    let src = load(input)?;
+    let file_before = fs::metadata(input)?.len();
+    let (textures, changes) = optimize_textures(&src, opts, &vec![true; src.len()])?;
     let file_after = write_ytd(out, &textures)?;
     let bytes_before = src.iter().map(|t| t.pixel_data.len()).sum();
     let bytes_after = textures.iter().map(|t| t.pixel_data.len()).sum::<usize>();

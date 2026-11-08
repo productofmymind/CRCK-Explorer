@@ -15,6 +15,7 @@ mod fivem;
 mod handling_ed;
 mod livery;
 mod mapdata;
+mod model_textures;
 mod rename;
 mod siren;
 mod textures;
@@ -27,6 +28,7 @@ pub enum Page {
     Handling,
     Livery,
     Textures,
+    ModelTextures,
     Clothing,
     Rename,
     Siren,
@@ -35,7 +37,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 10] = [Page::Pack, Page::Validate, Page::Handling, Page::Livery, Page::Textures, Page::Clothing, Page::Rename, Page::Siren, Page::Archives, Page::MapData];
+    pub const ALL: [Page; 11] = [Page::Pack, Page::Validate, Page::Handling, Page::Livery, Page::Textures, Page::ModelTextures, Page::Clothing, Page::Rename, Page::Siren, Page::Archives, Page::MapData];
 
     /// `--tool NAME` (automated screenshots)
     pub fn from_name(s: &str) -> Option<Page> {
@@ -45,6 +47,7 @@ impl Page {
             "handling" => Page::Handling,
             "livery" => Page::Livery,
             "textures" => Page::Textures,
+            "modeltextures" => Page::ModelTextures,
             "rename" => Page::Rename,
             "clothing" => Page::Clothing,
             "siren" => Page::Siren,
@@ -61,6 +64,7 @@ impl Page {
             Page::Handling => "Handling editor",
             Page::Livery => "Liveries",
             Page::Textures => "Images to YTD",
+            Page::ModelTextures => "Shrink model textures",
             Page::Rename => "Batch rename",
             Page::Clothing => "Clothing pack",
             Page::Siren => "Sirens",
@@ -76,6 +80,7 @@ impl Page {
             Page::Handling => "Open a handling.meta, change values with the vanilla range next to them, copy a vanilla vehicle's handling, and save without reformatting the file.",
             Page::Livery => "List the livery kits of a FiveM vehicle resource, add a livery (append-only, safe for a live server), and check an edit against the live file.",
             Page::Textures => "Drop images or folders of them (DDS, PNG, TGA, JPG, ...), choose all into one YTD or each into its own. To look inside a YTD or edit it, double-click it in the Explorer.",
+            Page::ModelTextures => "Shrink the textures embedded in .ydd / .ydr models (clothing packs keep their normal maps, often ATI2, inside the models) for a whole folder: pick formats and a size, scan, then write the smaller models to another folder.",
             Page::Rename => "Rename many files at once: numbers, texture letters, drawable numbers, find and replace, patterns. You see every new name and every conflict before anything changes, and can undo.",
             Page::Clothing => "Build a clothing pack for FiveM: drop .ydd models and .ytd textures, they are paired by name and grouped by component; check, preview, and build the resource with its YMT and metas.",
             Page::Siren => "Check the siren settings of a carcols.meta, and the calculators for angles, sequencer patterns and speeds.",
@@ -92,6 +97,7 @@ pub struct Tools {
     handling: handling_ed::State,
     livery: livery::State,
     textures: textures::State,
+    model_textures: model_textures::State,
     rename: rename::State,
     clothing: clothing::State,
     siren: siren::State,
@@ -108,6 +114,7 @@ impl Tools {
             handling: Default::default(),
             livery: Default::default(),
             textures: Default::default(),
+            model_textures: Default::default(),
             rename: Default::default(),
             clothing: Default::default(),
             siren: Default::default(),
@@ -120,6 +127,7 @@ impl Tools {
     pub fn take_drop(&mut self, paths: &[PathBuf]) -> bool {
         match self.page {
             Page::Textures => self.textures.add_dropped(paths),
+            Page::ModelTextures => self.model_textures.take_drop(paths),
             Page::Rename => self.rename.add_dropped(paths),
             Page::Clothing => self.clothing.add_dropped(paths),
             Page::Pack => self.pack.take_drop(paths),
@@ -156,7 +164,7 @@ impl Tools {
 
     /// background work that a screenshot should wait for
     pub fn busy(&self) -> bool {
-        self.handling.busy() || self.clothing.busy()
+        self.handling.busy() || self.clothing.busy() || self.model_textures.busy()
     }
 
     /// The sidebar: one row per tool.
@@ -194,6 +202,7 @@ impl Tools {
             Page::Handling => self.handling.ui(ui, &ctx, game),
             Page::Livery => self.livery.ui(ui, &ctx),
             Page::Textures => self.textures.ui(ui, &ctx),
+            Page::ModelTextures => self.model_textures.ui(ui, &ctx),
             Page::Rename => self.rename.ui(ui, &ctx),
             Page::Clothing => unreachable!("the clothing page has its own layout"),
             Page::Siren => self.siren.ui(ui, &ctx),

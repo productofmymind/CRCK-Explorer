@@ -221,6 +221,20 @@ pub fn stride_for(format: TextureFormat, width: u16, height: u16) -> u16 {
     (level_size(format, width, height) / height.max(1) as usize) as u16
 }
 
+/// The stride to read and lay out a texture's pixels by. Some tools store the wrong stride for a block-compressed
+/// texture (ATI2 / BC5 with the 4-bit stride of ATI1 / BC4, or ATI1 with the 8-bit one of ATI2), while the pixel data
+/// itself is the full chain the format implies. For a block-compressed format this is the stride the format implies
+/// ([`stride_for`]); any other format keeps its stored stride (rows can be padded).
+pub fn layout_stride(format: TextureFormat, width: u16, height: u16, stored: u16) -> u16 {
+    if !format.is_block_compressed() || width == 0 || height == 0 {
+        return stored;
+    }
+    match stride_for(format, width, height) {
+        0 => stored,
+        s => s,
+    }
+}
+
 /// Total bytes of a `levels`-deep mip chain, each level half the previous
 /// in both directions (never below 1 pixel).
 pub fn mip_chain_size(format: TextureFormat, width: u16, height: u16, levels: u8) -> usize {
@@ -388,6 +402,9 @@ fn parse_texture(tex_va: u64, name_hash: u32, reader: &ResReader<'_>, with_pixel
     let data_ptr = u64_le(raw, 0x70);
 
     let name = reader.string_at(name_ptr).unwrap_or_default();
+    // a wrong stored stride (see `layout_stride`) is read past when the data the format implies is there
+    let fixed = layout_stride(fmt, width, height, stride);
+    let stride = if fixed != stride && data_ptr != 0 && reader.resolve(data_ptr, calc_pixel_data_size(fixed, height, levels)).is_some() { fixed } else { stride };
     let pixel_size = calc_pixel_data_size(stride, height, levels);
 
     let pixel_data = if with_pixels && pixel_size > 0 && data_ptr != 0 {
@@ -401,7 +418,7 @@ fn parse_texture(tex_va: u64, name_hash: u32, reader: &ResReader<'_>, with_pixel
     Ok(YtdTexture { name, name_hash, width, height, depth, format: fmt, levels, stride, pixel_data })
 }
 
-fn calc_pixel_data_size(stride: u16, height: u16, levels: u8) -> usize {
+pub(crate) fn calc_pixel_data_size(stride: u16, height: u16, levels: u8) -> usize {
     let mut total = 0usize;
     let mut length = stride as usize * height as usize;
     for _ in 0..levels {

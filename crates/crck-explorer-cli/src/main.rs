@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use rage_toolkit_core::{game, handling, livery, model, pack, pipeline, rpf, siren, texture, validate, ycdtools, ytdtools};
+use rage_toolkit_core::{game, handling, livery, model, pack, pipeline, rpf, siren, texture, validate, ycdtools, yddtools, ytdtools};
 use std::{fs, path::PathBuf, process::ExitCode};
 
 #[derive(Parser)]
@@ -127,7 +127,13 @@ enum Cmd {
     Ytd {
         #[command(subcommand)]
         cmd: YtdCmd,
-    },    /// Clip dictionaries (.ycd): convert to and from .ycd.xml, list what is in one
+    },
+    /// Textures embedded in .ydd drawable dictionaries (clothing, props): list them, shrink them
+    Ydd {
+        #[command(subcommand)]
+        cmd: YddCmd,
+    },
+    /// Clip dictionaries (.ycd): convert to and from .ycd.xml, list what is in one
     Ycd {
         #[command(subcommand)]
         cmd: YcdCmd,
@@ -214,6 +220,49 @@ enum YtdCmd {
     },
     /// Per texture: size, format, mips, bytes, estimated VRAM and likely problems
     Report { input: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum YddCmd {
+    /// List the embedded textures of .ydd files or of every .ydd in folders: drawable, size, format (ATI2 marked), mips, bytes
+    Textures {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// only list textures in these formats, comma-separated (e.g. ati2)
+        #[arg(long)]
+        only: Option<String>,
+    },
+    /// Shrink embedded textures: cap the size, re-encode, drop small mips, or squeeze to a total size; never enlarges.
+    /// INPUT is a .ydd (OUT a file) or a folder (OUT a folder; every .ydd under it, same layout). The input is never
+    /// overwritten, and each result is read back and checked against the input before it is written.
+    Optimize {
+        input: PathBuf,
+        out: PathBuf,
+        /// only touch textures stored in these formats, comma-separated: ati2, dxt1, dxt5, bc7 ... (default: all)
+        #[arg(long)]
+        only: Option<String>,
+        /// only touch textures whose name contains this (case-insensitive; repeat for several)
+        #[arg(long = "name")]
+        names: Vec<String>,
+        /// downscale picked textures whose longer side is bigger than this
+        #[arg(long)]
+        max_size: Option<u32>,
+        /// non-power-of-two sides after resizing: round (default) | down | up | keep
+        #[arg(long, default_value = "round")]
+        pow2: String,
+        /// drop mip levels whose longer side is below this many pixels (saves very little)
+        #[arg(long)]
+        drop_mips_below: Option<u32>,
+        /// re-encode picked textures to bc1|bc3|bc4|bc5|bc7|rgba8
+        #[arg(long)]
+        format: Option<String>,
+        /// per .ydd: halve the largest picked textures until the embedded pixel data is at most this many MB
+        #[arg(long)]
+        target_mb: Option<f64>,
+        /// for a folder: write only the models that changed (default: every model, a full copy of the folder)
+        #[arg(long)]
+        changed_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -853,6 +902,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             println!("{} {}; {}x{}", if r.replaced { "replaced" } else { "added" }, r.name, r.width, r.height);
         }
         Cmd::Ytd { cmd } => ytd_cmd(cmd)?,
+        Cmd::Ydd { cmd } => return ydd_cmd(cmd),
         Cmd::Ycd { cmd } => match cmd {
             YcdCmd::ToXml { input, out } => {
                 let out = out.unwrap_or_else(|| ycdtools::default_output(&input));
@@ -928,6 +978,61 @@ fn ytd_cmd(cmd: YtdCmd) -> Result<()> {
         YtdCmd::Report { input } => print!("{}", ytdtools::format_report(&ytdtools::report(&input)?)),
     }
     Ok(())
+}
+
+fn ydd_cmd(cmd: YddCmd) -> Result<ExitCode> {
+    use yddtools::YddOptimizeOptions;
+    match cmd {
+        YddCmd::Textures { paths, only } => {
+            let only = only.as_deref().map(yddtools::parse_formats).transpose()?.unwrap_or_default();
+            let mut files = Vec::new();
+            for p in &paths {
+                if p.is_dir() { files.extend(yddtools::models_in(p, None)?); } else { files.push(p.clone()); }
+            }
+            files.sort();
+            let mut failed = 0;
+            for f in &files {
+                match yddtools::report(f) {
+                    Ok(rows) => {
+                        let rows: Vec<_> = rows.into_iter().filter(|r| yddtools::matches_formats(r.format, &only)).collect();
+                        print!("{}", yddtools::format_report(f, &rows));
+                    }
+                    Err(e) => { failed += 1; eprintln!("error: {e:#}"); }
+                }
+            }
+            Ok(if failed > 0 { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+        }
+        YddCmd::Optimize { input, out, only, names, max_size, pow2, drop_mips_below, format, target_mb, changed_only } => {
+            let opts = YddOptimizeOptions {
+                base: ytdtools::OptimizeOptions {
+                    max_size,
+                    pow2: ytdtools::parse_pow2(&pow2)?,
+                    drop_mips_below,
+                    format_override: format.as_deref().map(rage_formats_parse).transpose()?,
+                    target_bytes: target_mb.map(|m| (m * 1048576.0) as u64),
+                },
+                only_formats: only.as_deref().map(yddtools::parse_formats).transpose()?.unwrap_or_default(),
+                name_contains: names,
+                exact_names: vec![],
+                write_unchanged: !changed_only,
+            };
+            let results = if input.is_dir() { yddtools::optimize_dir(&input, &out, &opts, &|_, _, _| {})? } else { vec![yddtools::optimize(&input, &out, &opts)] };
+            let (mut ok, mut failed, mut before, mut after) = (0, 0, 0u64, 0u64);
+            for r in results {
+                match r {
+                    Ok(r) => {
+                        print!("{}", yddtools::format_optimize(&r));
+                        ok += 1; before += r.file_before; after += r.file_after;
+                    }
+                    Err(e) => { failed += 1; eprintln!("error: {e:#}"); }
+                }
+            }
+            if ok + failed > 1 {
+                println!("{ok} file(s) written, {failed} failed; {before} -> {after} bytes");
+            }
+            Ok(if failed > 0 { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+        }
+    }
 }
 
 fn handling_cmd(cmd: HandlingCmd) -> Result<ExitCode> {

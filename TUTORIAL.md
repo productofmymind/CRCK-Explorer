@@ -235,6 +235,26 @@ Tools > **Clothing pack**. Laid out like other clothing tools: your drawables on
 
 Projects can be saved and loaded. Build output has not been loaded in a running game.
 
+### Textures embedded in a `.ydd`
+
+Many clothing `.ydd` files carry their own textures (often an ATI2 normal map) inside the model instead of in the `.ytd`. They count against the streaming size like any other texture.
+
+- **One model, in the Viewer:** a texture marked *embedded in the model* has **...** > **Shrink to** (half, quarter, ... of its size; format and a full mip chain kept), **Replace with image or DDS...** and **Export as DDS / PNG...**. Your own file is saved in place with a `.bak` the first time; a file from the game is saved where you choose. Works for `.ydd` and `.ydr` (not `.yft` yet).
+- **A whole folder:** Tools > **Shrink model textures**. Choose the folder, tick the formats (ATI2 by default), pick the longest side, **Scan** to see what would shrink, then **Shrink**: the smaller models go to `<folder>_optimized` (or a folder you choose) with the same layout, only the changed ones unless you tick the full copy.
+
+Or from the command line:
+
+```
+crck-explorer-cli ydd textures file.ydd [more.ydd | folder ...] [--only ati2]
+crck-explorer-cli ydd optimize in.ydd out.ydd   [--only ati2,dxt5] [--name _n] [--max-size N] [--pow2 round|down|up|keep] [--drop-mips-below N] [--format bc1|bc3|bc4|bc5|bc7|rgba8] [--target-mb N]
+crck-explorer-cli ydd optimize stream\ smaller\ [--changed-only]  (every .ydd / .ydr under the folder, same layout)
+```
+
+- `textures` lists every embedded texture per drawable: size, format (ATI2 marked), mips, bytes and estimated VRAM.
+- `optimize` works like `ytd optimize` on the textures picked by `--only` (stored format) and `--name` (part of the name); everything else in the file is written back as read. For example `--only ati2 --max-size 512` halves 1024 normal maps and keeps their full mip chain.
+- The input is never overwritten. Each result is read back by two separate readers and compared with the input (drawables, models, vertex and index data, shaders, skeleton, the textures that were not picked); a file that does not match is not written. A file where nothing changes is copied as is.
+- Only Legacy (`.ydd` version 165) files: an Enhanced (Gen9) `.ydd` is refused.
+
 ## Batch rename
 
 Tools > **Batch rename**. Build a list of steps, each working on the name without its extension, in order, each on the result of the one before. You see **every new name before anything happens**; conflicts and invalid names block the run; a failure rolls back; **Undo** restores the old names (it refuses if an old name was taken again).

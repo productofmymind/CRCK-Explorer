@@ -41,6 +41,7 @@ pub mod ymap_items;
 pub mod ymap_lod;
 pub mod ymap_ops;
 pub mod ycdtools;
+pub mod yddtools;
 pub mod ytdtools;
 
 pub use rage_formats::gen9::Edition;
