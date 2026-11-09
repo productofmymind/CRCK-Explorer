@@ -5,306 +5,123 @@
 //! The YMT is written as XML, turned into a Meta file by `rage-formats`, then **read back and compared** with what
 //! was meant, so a file that would read differently is never written. Its shape was checked against the game's own freemode YMTs
 //!; it has not been loaded by the game or FiveM.
-use super::{file_of, validate, Drawable, Issue, Kind, Project, Sev, Sex};
+use super::{file_of, validate, ymt::{ymt_bytes, Ymt}, Drawable, Issue, Kind, Layout, Place, Project, Sev, Sex, TexEdit, TextureOptimize};
+pub use super::ymt::ANCHOR_ENUM;
 use anyhow::{bail, Context, Result};
-use rage_formats::{build_meta, dump_meta, from_xml, rage_joaat, to_xml, MetaValue, NameTable, Schema};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
 };
-
-// ---- the shape of a YMT ---------------------------------------------------------------------------------------------------
-
-/// What a YMT says about the drawables of one sex: per component the texture count of each drawable, per prop anchor the texture
-/// count of each prop. Everything else in the file follows from this.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Shape {
-    /// component index -> per drawable: (texture count, owns cloth)
-    pub components: BTreeMap<u8, Vec<(usize, bool)>>,
-    /// anchor index -> per prop: texture count
-    pub props: BTreeMap<u8, Vec<usize>>,
-}
-
-impl Shape {
-    /// from drawables with consecutive numbers `0..n` per kind (already local to one addon and one sex)
-    pub fn of(drawables: &[&Drawable]) -> Shape {
-        let mut s = Shape::default();
-        let mut sorted: Vec<&&Drawable> = drawables.iter().collect();
-        sorted.sort_by_key(|d| (d.kind, d.number));
-        for d in sorted {
-            match d.kind {
-                Kind::Component(i) => s.components.entry(i).or_default().push((d.textures.len(), d.cloth.is_some())),
-                Kind::Prop(i) => s.props.entry(i).or_default().push(d.textures.len()),
-            }
-        }
-        s
-    }
-
-    /// read it back out of a YMT tree (ours or the game's)
-    pub fn of_tree(root: &MetaValue) -> Shape {
-        let mut s = Shape::default();
-        let Some(r) = root.as_struct() else { return s };
-        let avail: Vec<u8> = match r.field("availComp") {
-            Some(MetaValue::Bytes(b)) => b.clone(),
-            _ => vec![],
-        };
-        let comps = r.field("aComponentData3").map(|v| v.items()).unwrap_or(&[]);
-        for (i, a) in avail.iter().enumerate() {
-            if *a == 255 {
-                continue;
-            }
-            let Some(c) = comps.get(*a as usize).and_then(|c| c.as_struct()) else { continue };
-            let list = c.field("aDrawblData3").map(|v| v.items()).unwrap_or(&[]);
-            let drawables = list
-                .iter()
-                .filter_map(|d| d.as_struct())
-                .map(|d| {
-                    let tex = d.field("aTexData").map(|t| t.items().len()).unwrap_or(0);
-                    let cloth = matches!(d.field("clothData").and_then(|c| c.as_struct()).and_then(|c| c.field("ownsCloth")), Some(MetaValue::Bool(true)));
-                    (tex, cloth)
-                })
-                .collect();
-            s.components.insert(i as u8, drawables);
-        }
-        if let Some(info) = r.field("propInfo").and_then(|p| p.as_struct()) {
-            for a in info.field("aAnchors").map(|v| v.items()).unwrap_or(&[]).iter().filter_map(|a| a.as_struct()) {
-                // the anchor is an enum; its index is the order of the anchor names
-                let name = match a.field("anchor") {
-                    Some(MetaValue::Enum { name: Some(h), .. }) => NameTable::core().resolve(*h).to_string(),
-                    Some(MetaValue::Str(t)) => t.clone(),
-                    _ => continue,
-                };
-                let Some(idx) = ANCHOR_ENUM.iter().position(|e| *e == name) else { continue };
-                let counts: Vec<usize> = match a.field("props") {
-                    Some(MetaValue::Array(arr)) => arr.items.iter().filter_map(|x| x.as_i64()).map(|x| x as usize).collect(),
-                    Some(MetaValue::Bytes(b)) => b.iter().map(|x| *x as usize).collect(),
-                    _ => vec![],
-                };
-                s.props.insert(idx as u8, counts);
-            }
-        }
-        s
-    }
-}
-
-/// the game's names for the prop anchor points, in anchor order
-pub const ANCHOR_ENUM: [&str; 9] = ["ANCHOR_HEAD", "ANCHOR_EYES", "ANCHOR_EARS", "ANCHOR_MOUTH", "ANCHOR_LEFT_HAND", "ANCHOR_RIGHT_HAND", "ANCHOR_LEFT_WRIST", "ANCHOR_RIGHT_WRIST", "ANCHOR_HIP"];
-
-/// The YMT as XML. `dlc_name` is the pack name (hashed in lowercase).
-pub fn ymt_xml(shape: &Shape, dlc_name: &str) -> String {
-    let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CPedVariationInfo>\n");
-    let mut line = |depth: usize, text: &str| {
-        x.push_str(&"  ".repeat(depth));
-        x.push_str(text);
-        x.push('\n');
-    };
-    line(1, "<bHasTexVariations value=\"true\"/>");
-    line(1, "<bHasDrawblVariations value=\"true\"/>");
-    line(1, "<bHasLowLODs value=\"false\"/>");
-    line(1, "<bIsSuperLOD value=\"false\"/>");
-    // position of each present component in aComponentData3, FF when absent
-    let mut avail = [255u8; 12];
-    for (pos, comp) in shape.components.keys().enumerate() {
-        avail[*comp as usize] = pos as u8;
-    }
-    line(1, "<availComp itemType=\"ByteArray\">");
-    line(2, &avail.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "));
-    line(1, "</availComp>");
-    if shape.components.is_empty() {
-        line(1, "<aComponentData3 itemType=\"CPVComponentData\"/>");
-    } else {
-        line(1, "<aComponentData3 itemType=\"CPVComponentData\">");
-        for drawables in shape.components.values() {
-            line(2, "<Item>");
-            // a byte: the game's own files store the sum modulo 256 when a component has more than 255 textures (74 of them do)
-            line(3, &format!("<numAvailTex value=\"{}\"/>", drawables.iter().map(|d| d.0).sum::<usize>() % 256));
-            line(3, "<aDrawblData3 itemType=\"CPVDrawblData\">");
-            for (tex, cloth) in drawables {
-                line(4, "<Item>");
-                line(5, "<propMask value=\"1\"/>");
-                line(5, "<numAlternatives value=\"0\"/>");
-                if *tex == 0 {
-                    line(5, "<aTexData itemType=\"CPVTextureData\"/>");
-                } else {
-                    line(5, "<aTexData itemType=\"CPVTextureData\">");
-                    for _ in 0..*tex {
-                        line(6, "<Item>");
-                        line(7, "<texId value=\"0\"/>");
-                        line(7, "<distribution value=\"255\"/>");
-                        line(6, "</Item>");
-                    }
-                    line(5, "</aTexData>");
-                }
-                line(5, "<clothData>");
-                line(6, &format!("<ownsCloth value=\"{cloth}\"/>"));
-                line(5, "</clothData>");
-                line(4, "</Item>");
-            }
-            line(3, "</aDrawblData3>");
-            line(2, "</Item>");
-        }
-        line(1, "</aComponentData3>");
-    }
-    line(1, "<aSelectionSets itemType=\"CPedSelectionSet\"/>");
-    if shape.components.is_empty() {
-        line(1, "<compInfos itemType=\"CComponentInfo\"/>");
-    } else {
-        line(1, "<compInfos itemType=\"CComponentInfo\">");
-        for (comp, drawables) in &shape.components {
-            for n in 0..drawables.len() {
-                line(2, "<Item>");
-                line(3, "<pedXml_audioID>none</pedXml_audioID>");
-                line(3, "<pedXml_audioID2>none</pedXml_audioID2>");
-                line(3, "<pedXml_expressionMods itemType=\"float\">");
-                line(4, "0 0 0 0 0");
-                line(3, "</pedXml_expressionMods>");
-                line(3, "<flags value=\"0\"/>");
-                line(3, "<inclusions/>");
-                line(3, "<exclusions/>");
-                line(3, "<pedXml_vfxComps/>");
-                line(3, "<pedXml_flags value=\"0\"/>");
-                line(3, &format!("<pedXml_compIdx value=\"{comp}\"/>"));
-                line(3, &format!("<pedXml_drawblIdx value=\"{n}\"/>"));
-                line(2, "</Item>");
-            }
-        }
-        line(1, "</compInfos>");
-    }
-    line(1, "<propInfo>");
-    let n_props: usize = shape.props.values().map(Vec::len).sum();
-    line(2, &format!("<numAvailProps value=\"{n_props}\"/>"));
-    if n_props == 0 {
-        line(2, "<aPropMetaData itemType=\"CPedPropMetaData\"/>");
-    } else {
-        line(2, "<aPropMetaData itemType=\"CPedPropMetaData\">");
-        for (anchor, props) in &shape.props {
-            for (n, tex) in props.iter().enumerate() {
-                line(3, "<Item>");
-                line(4, "<audioId>none</audioId>");
-                line(4, "<expressionMods itemType=\"float\">");
-                line(5, "0 0 0 0 0");
-                line(4, "</expressionMods>");
-                if *tex == 0 {
-                    line(4, "<texData itemType=\"CPedPropTexData\"/>");
-                } else {
-                    line(4, "<texData itemType=\"CPedPropTexData\">");
-                    for t in 0..*tex {
-                        line(5, "<Item>");
-                        line(6, "<inclusions/>");
-                        line(6, "<exclusions/>");
-                        line(6, &format!("<texId value=\"{t}\"/>"));
-                        line(6, "<inclusionId value=\"0\"/>");
-                        line(6, "<exclusionId value=\"0\"/>");
-                        line(6, "<distribution value=\"255\"/>");
-                        line(5, "</Item>");
-                    }
-                    line(4, "</texData>");
-                }
-                line(4, "<renderFlags/>");
-                line(4, "<propFlags value=\"0\"/>");
-                line(4, "<flags value=\"0\"/>");
-                line(4, &format!("<anchorId value=\"{anchor}\"/>"));
-                line(4, &format!("<propId value=\"{n}\"/>"));
-                line(4, "<stickyness value=\"0\"/>");
-                line(3, "</Item>");
-            }
-        }
-        line(2, "</aPropMetaData>");
-    }
-    if shape.props.is_empty() {
-        line(2, "<aAnchors itemType=\"CAnchorProps\"/>");
-    } else {
-        line(2, "<aAnchors itemType=\"CAnchorProps\">");
-        for (anchor, props) in &shape.props {
-            line(3, "<Item>");
-            line(4, "<props itemType=\"byte\">");
-            line(5, &props.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" "));
-            line(4, "</props>");
-            line(4, &format!("<anchor>{}</anchor>", ANCHOR_ENUM[*anchor as usize]));
-            line(3, "</Item>");
-        }
-        line(2, "</aAnchors>");
-    }
-    line(1, "</propInfo>");
-    line(1, &format!("<dlcName>hash_{:08X}</dlcName>", rage_joaat(&dlc_name.to_lowercase())));
-    line(0, "</CPedVariationInfo>");
-    x
-}
-
-fn normalised(xml: &str) -> String {
-    // the DLC name is a hash that may print as a known name; it is compared as a number below
-    crate::archetype::fidelity::normalised_xml(xml, &["<dlcName>"])
-}
-
-/// the YMT file for a shape; the bytes are read back and compared with the XML before they are returned
-pub fn ymt_bytes(shape: &Shape, dlc_name: &str) -> Result<Vec<u8>> {
-    let xml = ymt_xml(shape, dlc_name);
-    let tree = from_xml(&xml).context("the generated YMT XML does not parse")?;
-    let built = build_meta(&tree, Schema::builtin()).context("building the YMT")?;
-    if let Some(w) = built.warnings.first() {
-        bail!("the YMT writer left something out: {w}");
-    }
-    let back = dump_meta(&built.bytes).context("reading the YMT back")?;
-    let names = NameTable::core();
-    let (want, got) = (normalised(&to_xml(&tree, &names)), normalised(&to_xml(&back.root, &names)));
-    if want != got {
-        let at = want.lines().zip(got.lines()).position(|(a, b)| a != b).unwrap_or(0);
-        bail!("the YMT reads back differently from what was meant (first difference near line {}: {:?} vs {:?})", at + 1, want.lines().nth(at).unwrap_or(""), got.lines().nth(at).unwrap_or(""));
-    }
-    let dlc = back.root.as_struct().and_then(|s| s.field("dlcName")).and_then(|v| v.as_hash());
-    if dlc != Some(rage_joaat(&dlc_name.to_lowercase())) {
-        bail!("the YMT's DLC name hash is wrong ({dlc:?})");
-    }
-    if Shape::of_tree(&back.root) != *shape {
-        bail!("the YMT reads back with another shape than the project's");
-    }
-    Ok(built.bytes)
-}
 
 // ---- the other files --------------------------------------------------------------------------------------------------------
 
 /// `ShopPedApparel`: what FiveM reads (`SHOP_PED_APPAREL_META_FILE`) to know the addon exists. The shop lists stay empty: the
 /// clothes are added to a ped by script, not through the in-game shop.
-pub fn shop_meta(sex: Sex, addon: &str) -> String {
+/// shop meta also names the DLC's creature metadata (high heels, hats), as packs do even for a DLC without one.
+pub fn shop_meta(sex: Sex, addon: &str, creature: &str) -> String {
     let (ped, character) = (sex.ped(), if sex == Sex::Male { "SCR_CHAR_MULTIPLAYER" } else { "SCR_CHAR_MULTIPLAYER_F" });
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\n<ShopPedApparel>\n  <pedName>{ped}</pedName>\n  <dlcName>{addon}</dlcName>\n  <fullDlcName>{ped}_{addon}</fullDlcName>\n  <eCharacter>{character}</eCharacter>\n  <pedOutfits />\n  <pedComponents />\n  <pedProps />\n</ShopPedApparel>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\n<ShopPedApparel>\n  <pedName>{ped}</pedName>\n  <dlcName>{addon}</dlcName>\n  <fullDlcName>{ped}_{addon}</fullDlcName>\n  <eCharacter>{character}</eCharacter>\n  <creatureMetaData>{creature}</creatureMetaData>\n  <pedOutfits />\n  <pedComponents />\n  <pedProps />\n</ShopPedApparel>\n"
     )
 }
 
-pub fn fxmanifest(project_name: &str, metas: &[String]) -> String {
+/// The data files a manifest registers, by kind.
+#[derive(Debug, Clone, Default)]
+pub struct DataFiles {
+    pub shop: Vec<String>,
+    pub alt_variations: Vec<String>,
+    pub first_person: Vec<String>,
+    /// carried files with their own type: (type, file)
+    pub other: Vec<(String, String)>,
+}
+
+impl DataFiles {
+    /// `(file type, files)`, in the order the manifest lists them. First-person alternates are `PED_FIRST_PERSON_ALTERNATE_DATA`,
+    /// as Rockstar's content.xml registers `first_person_alternates.meta` (`PED_FIRST_PERSON_ASSET_DATA` is `first_person.meta`).
+    pub fn kinds(&self) -> [(&'static str, &[String]); 3] {
+        [("SHOP_PED_APPAREL_META_FILE", &self.shop), ("ALTERNATE_VARIATIONS_FILE", &self.alt_variations), ("PED_FIRST_PERSON_ALTERNATE_DATA", &self.first_person)]
+    }
+}
+
+pub fn fxmanifest(project_name: &str, data: &DataFiles) -> String {
     let mut s = format!("-- generated by CRCK Explorer: clothing pack {project_name}\nfx_version 'cerulean'\ngame 'gta5'\n\nfiles {{\n");
-    s += &metas.iter().map(|m| format!("    '{m}',\n")).collect::<String>();
+    for (_, files) in data.kinds() {
+        s += &files.iter().map(|m| format!("    '{m}',\n")).collect::<String>();
+    }
+    s += &data.other.iter().map(|(_, m)| format!("    '{m}',\n")).collect::<String>();
     s += "}\n\n";
-    s += &metas.iter().map(|m| format!("data_file 'SHOP_PED_APPAREL_META_FILE' '{m}'\n")).collect::<String>();
+    for (kind, files) in data.kinds() {
+        s += &files.iter().map(|m| format!("data_file '{kind}' '{m}'\n")).collect::<String>();
+    }
+    s += &data.other.iter().map(|(kind, m)| format!("data_file '{kind}' '{m}'\n")).collect::<String>();
     s
+}
+
+/// The files of DLC `dlc` besides its YMTs and shop metas: creature metadata (into `<root>stream/`), alternate variations and
+/// first-person alternates (into `<root><meta_dir>`). `root` is the resource folder in the output (`""` for a single resource),
+/// and the manifest lists the files by `<meta_dir>...`. Problems (switches of removed drawables) come back as warnings.
+pub fn dlc_extras(p: &Project, dlc: usize, root: &str, meta_dir: &str, outputs: &mut Vec<Output>, data: &mut DataFiles, issues: &mut Vec<Issue>) -> Result<()> {
+    use super::extras;
+    let creature = extras::creature_expressions(p, dlc);
+    let rel = format!("stream/{}.ymt", p.creature_name(dlc).to_lowercase());
+    // a Rockstar DLC's creature file is only replaced under the name the game knows (read from a pack); a creature file
+    // carried as it was (it held more than the build writes) stands instead of the generated one
+    let named = !p.dlcs.get(dlc).is_some_and(|d| d.base && d.creature.is_none());
+    // a Rockstar DLC from the game: its creature file is written only when the project adds to it (else the game's stays)
+    let adds = p.dlcs.get(dlc).and_then(|d| d.game_creature.as_ref()).is_none_or(|g| *g != creature);
+    if !creature.is_empty() && named && adds && !p.carried.iter().any(|c| c.dest.eq_ignore_ascii_case(&rel)) {
+        outputs.push(Output { dest: format!("{root}{rel}"), source: Source::Bytes(extras::creature_bytes(&creature)?) });
+    }
+    let label = p.dlc_label(dlc);
+    let (switches, problems) = extras::alt_switches_of(p, dlc);
+    for m in problems {
+        issues.push(Issue { sev: Sev::Warning, code: "CLOTH_ALT_REMOVED", message: m, fix: "nothing to do if the drawable was removed on purpose".into(), drawable: None });
+    }
+    if let Some(x) = extras::alt_variations_xml(&switches) {
+        let rel = format!("{meta_dir}pedalternatevariations_{label}.meta");
+        outputs.push(Output { dest: format!("{root}{rel}"), source: Source::Bytes(x.into_bytes()) });
+        data.alt_variations.push(rel);
+    }
+    if let Some(x) = extras::first_person_xml(&extras::first_person_of(p, dlc)) {
+        let rel = format!("{meta_dir}first_person_alternates_{label}.meta");
+        outputs.push(Output { dest: format!("{root}{rel}"), source: Source::Bytes(x.into_bytes()) });
+        data.first_person.push(rel);
+    }
+    Ok(())
+}
+
+/// The manifest of a stream resource: it only streams.
+pub fn stream_manifest(project_name: &str, resource: &str) -> String {
+    format!("-- generated by CRCK Explorer: clothing pack {project_name}, {resource}\nfx_version 'cerulean'\ngame 'gta5'\n\n-- streaming only: every file under stream/ is streamed; the YMTs and metas are in {project_name}_control\n")
+}
+
+/// The stream resource of drawable `d` in the control + streams layout: `<project>_stream_<m|f><DLC number>` (Rockstar DLCs:
+/// `<project>_stream_base`), and `_02`, `_03`, ... for its numbers past each `stream_limit`.
+pub fn stream_resource(p: &Project, d: &Drawable) -> String {
+    let block = d.number as usize / p.stream_limit.max(1);
+    let base = if p.dlcs.get(d.dlc).is_some_and(|x| x.base) { format!("{}_stream_base", p.name) } else { format!("{}_stream_{}{}", p.name, if d.sex == Sex::Male { "m" } else { "f" }, d.dlc + 1) };
+    if block == 0 {
+        base
+    } else {
+        format!("{base}_{:02}", block + 1)
+    }
 }
 
 // ---- splitting and planning --------------------------------------------------------------------------------------------------
 
-/// The pack cut into addons of at most `limit` drawables per component and sex: one addon (the project itself) when it fits, else
-/// `name_01`, `name_02`, ... with the numbers starting again at 0 in each.
-pub fn split_addons(p: &Project) -> Vec<Project> {
-    let limit = p.limit.max(1) as u32;
-    let chunks = p.drawables.iter().map(|d| d.number / limit + 1).max().unwrap_or(1) as usize;
-    if chunks <= 1 {
-        return vec![p.clone()];
-    }
-    (0..chunks)
-        .map(|k| Project {
-            archived: vec![], sorted: p.sorted,
-            name: format!("{}_{:02}", p.name, k + 1),
-            limit: p.limit,
-            drawables: p.drawables.iter().filter(|d| (d.number / limit) as usize == k).map(|d| Drawable { number: d.number - k as u32 * limit, ..d.clone() }).collect(),
-        })
-        .filter(|a| !a.drawables.is_empty())
-        .collect()
+/// The DLCs that have drawables, in order, with their drawables.
+pub fn dlc_groups(p: &Project) -> Vec<(usize, Vec<&Drawable>)> {
+    (0..p.dlcs.len()).map(|k| (k, p.drawables.iter().filter(|d| d.dlc == k).collect::<Vec<_>>())).filter(|(_, ds)| !ds.is_empty()).collect()
 }
 
 #[derive(Debug, Clone)]
 pub enum Source {
     Copy(PathBuf),
+    /// a `.ytd` or a model written with its textures changed: `all` for every texture of a `.ytd`, or every embedded texture of
+    /// a model in `all_formats` (empty: all formats); `named` per embedded texture of a model, by name (the user's own choices,
+    /// which come first)
+    Optimize { from: PathBuf, model: bool, all: TexEdit, all_formats: String, named: Vec<(String, TexEdit)> },
     /// an image (PNG, JPG, DDS, ...) made into a one-texture `.ytd` when the pack is built
     Image(PathBuf),
     Bytes(Vec<u8>),
@@ -312,15 +129,20 @@ pub enum Source {
 
 #[derive(Debug, Clone)]
 pub struct Output {
-    /// relative to the resource folder, with `/`
+    /// relative to the plan's resource folder (in the control + streams layout: starting with the resource), with `/`
     pub dest: String,
     pub source: Source,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct BuildPlan {
-    /// the resource folder name (the pack name)
+    /// the resource folder the outputs go in (the pack name); empty for the control + streams layout, whose outputs start with
+    /// their resource's folder
     pub resource: String,
+    /// the project name (the control + streams layout's resources are `<project>_control`, `<project>_stream...`)
+    pub project: String,
+    /// the texture settings the optimized outputs are written with
+    pub optimize: TextureOptimize,
     pub outputs: Vec<Output>,
     /// addon names, with their drawable and texture counts
     pub addons: Vec<(String, usize, usize)>,
@@ -338,30 +160,54 @@ pub fn plan_build(p: &Project) -> BuildPlan {
     // all in stream/, or a folder per sex and category (FiveM streams files from subfolders the same way)
     let sorted = p.sorted;
     let folder = |d: &Drawable| if sorted { format!("stream/{}/{}/", d.sex.label(), d.kind.name()) } else { "stream/".to_string() };
-    let mut plan = BuildPlan { resource: p.name.clone(), ..Default::default() };
+    let mut plan = BuildPlan { resource: p.name.clone(), project: p.name.clone(), optimize: p.optimize.clone(), ..Default::default() };
+    // a model or texture file is written through the optimizer when its kind has a size (else copied)
+    // the per-build sizes (only when asked for this build) and the user's own choices per texture
+    let (ydd_all, ytd_all) = (TexEdit { max: p.optimize.ydd_max, format: None }, TexEdit { max: p.optimize.ytd_max, format: None });
+    let model_source = |d: &Drawable, f: &PathBuf| {
+        let named: Vec<(String, TexEdit)> = d.model_edits.iter().filter(|e| !e.1.is_empty()).cloned().collect();
+        if ydd_all.is_empty() && named.is_empty() {
+            Source::Copy(f.clone())
+        } else {
+            Source::Optimize { from: f.clone(), model: true, all: ydd_all.clone(), all_formats: p.optimize.ydd_formats.clone(), named }
+        }
+    };
     plan.issues = validate(p);
+    // a Rockstar DLC switched off is not built at all: the game keeps its own YMT and files, and its problems do not stop the build
+    let left_out = |k: usize| p.dlcs.get(k).is_some_and(|d| d.base && d.left_out);
+    plan.issues.retain(|i| !i.drawable.and_then(|d| p.drawables.get(d)).is_some_and(|d| left_out(d.dlc)));
     // the YMT stores drawables by position, so a gap in the numbers would make every file name wrong: it must be closed first
-    for ((sex, kind), items) in group(p) {
+    for ((dlc, sex, kind), items) in group(p).into_iter().filter(|((dlc, _, _), _)| !left_out(*dlc)) {
         let mut nums: Vec<u32> = items.iter().map(|d| d.number).collect();
         nums.sort();
         if nums.iter().enumerate().any(|(i, n)| *n != i as u32) && !nums.windows(2).any(|w| w[0] == w[1]) {
-            plan.issues.push(Issue { sev: Sev::Error, code: "CLOTH_GAP_BUILD", message: format!("{} {}: the numbers are not 0, 1, 2, ... so the game would pick the wrong drawable", sex.label(), kind.name()), fix: "press Close the gaps before building".into(), drawable: None });
+            plan.issues.push(Issue { sev: Sev::Error, code: "CLOTH_GAP_BUILD", message: format!("{} {} {}: the numbers are not 0, 1, 2, ... so the game would pick the wrong drawable", p.dlc_label(dlc), sex.label(), kind.name()), fix: "press Close the gaps before building".into(), drawable: None });
         }
     }
     if plan.errors() > 0 {
         return plan;
     }
-    let addons = split_addons(p);
-    let mut metas = vec![];
-    for addon in &addons {
-        plan.addons.push((addon.name.clone(), addon.drawables.len(), addon.drawables.iter().map(|d| d.textures.len()).sum()));
+    let split = p.layout == Layout::ControlAndStreams;
+    // the control resource's folder in the output, and where its metas go
+    let (root, meta_dir) = if split { (format!("{}_control/", p.name), "data/") } else { (String::new(), "") };
+    if split {
+        plan.resource = String::new();
+    }
+    let mut streams: BTreeMap<String, ()> = BTreeMap::new();
+    let mut data = DataFiles::default();
+    for (k, addon) in dlc_groups(p) {
+        if left_out(k) {
+            plan.issues.push(Issue { sev: Sev::Info, code: "CLOTH_DLC_LEFT_OUT", message: format!("{} is left out of this build: the game keeps its own YMT and files ({} drawable(s) of the project are not written)", p.dlc_label(k), addon.iter().filter(|d| !d.ydd.as_os_str().is_empty()).count()), fix: "switch on Replace its YMT in the Build window to build it".into(), drawable: None });
+            continue;
+        }
+        plan.addons.push((p.dlc_label(k), addon.len(), addon.iter().map(|d| d.textures.len()).sum()));
         for sex in [Sex::Male, Sex::Female] {
-            let drawables: Vec<&Drawable> = addon.drawables.iter().filter(|d| d.sex == sex).collect();
+            let drawables: Vec<&Drawable> = addon.iter().copied().filter(|d| d.sex == sex).collect();
             if drawables.is_empty() {
                 continue;
             }
-            let ped = sex.ped();
-            let ymt = match ymt_bytes(&Shape::of(&drawables), &addon.name) {
+            let (ped, dlc) = (sex.ped(), p.dlc_name(k, sex));
+            let ymt = match ymt_bytes(&Ymt::of(&drawables), &dlc) {
                 Ok(b) => b,
                 Err(e) => {
                     plan.issues.push(Issue { sev: Sev::Error, code: "CLOTH_YMT", message: format!("{} YMT: {e:#}", sex.label()), fix: "this is a bug in CRCK Explorer; the files were not written".into(), drawable: None });
@@ -369,29 +215,93 @@ pub fn plan_build(p: &Project) -> BuildPlan {
                     return plan;
                 }
             };
-            plan.outputs.push(Output { dest: format!("stream/{ped}_{}.ymt", addon.name), source: Source::Bytes(ymt) });
-            let meta = format!("{ped}_{}.meta", addon.name);
-            plan.outputs.push(Output { dest: meta.clone(), source: Source::Bytes(shop_meta(sex, &addon.name).into_bytes()) });
-            metas.push(meta);
+            plan.outputs.push(Output { dest: format!("{root}stream/{ped}_{dlc}.ymt"), source: Source::Bytes(ymt) });
+            // a Rockstar DLC is already known to the game: no shop meta
+            if !p.dlcs[k].base {
+                let meta = format!("{meta_dir}{ped}_{dlc}.meta");
+                plan.outputs.push(Output { dest: format!("{root}{meta}"), source: Source::Bytes(shop_meta(sex, &dlc, &p.creature_name(k)).into_bytes()) });
+                data.shop.push(meta);
+            }
             for d in drawables {
-                // components are streamed as <ped>_<addon>^file, props as <ped>_p_<addon>^file
-                let prefix = if d.kind.is_prop() { format!("{ped}_p_{}^", addon.name) } else { format!("{ped}_{}^", addon.name) };
-                plan.outputs.push(Output { dest: format!("{}{prefix}{}", folder(d), d.kind.drawable_file(d.number, &d.race)), source: Source::Copy(d.ydd.clone()) });
-                if let Some(c) = &d.cloth {
-                    plan.outputs.push(Output { dest: format!("{}{prefix}{}", folder(d), d.kind.drawable_file(d.number, &d.race).replace(".ydd", ".yld")), source: Source::Copy(c.clone()) });
+                // components are streamed as <ped>_<dlc>^file, props as <ped>_p_<dlc>^file
+                let prefix = if d.kind.is_prop() { format!("{ped}_p_{dlc}^") } else { format!("{ped}_{dlc}^") };
+                // where its files go: in a stream resource, a folder per DLC as packs have it (stream/<ped>_<dlc>/);
+                // in one resource stream/, or a folder per sex and category
+                let at = if split {
+                    let r = stream_resource(p, d);
+                    let f = format!("{r}/stream/{}/{prefix}", prefix.trim_end_matches('^'));
+                    streams.insert(r, ());
+                    f
+                } else {
+                    format!("{}{prefix}", folder(d))
+                };
+                let model = d.kind.drawable_file(d.number, &d.race);
+                // an empty path (in a Rockstar DLC): the game's own file stays
+                if !d.ydd.as_os_str().is_empty() {
+                    plan.outputs.push(Output { dest: format!("{at}{model}"), source: model_source(d, &d.ydd) });
+                }
+                if let Some(c) = d.cloth.as_ref().filter(|c| !c.as_os_str().is_empty()) {
+                    plan.outputs.push(Output { dest: format!("{at}{}", model.replace(".ydd", ".yld")), source: Source::Copy(c.clone()) });
                 }
                 // alternate models keep their number after the drawable's name: jbib_007_u_1.ydd
-                for (n, a) in &d.alternates {
-                    plan.outputs.push(Output { dest: format!("{}{prefix}{}", folder(d), d.kind.drawable_file(d.number, &d.race).replace(".ydd", &format!("_{n}.ydd"))), source: Source::Copy(a.clone()) });
+                for (n, a) in d.alternates.iter().filter(|(_, a)| !a.as_os_str().is_empty()) {
+                    plan.outputs.push(Output { dest: format!("{at}{}", model.replace(".ydd", &format!("_{n}.ydd"))), source: model_source(d, a) });
                 }
-                for t in &d.textures {
+                for t in d.textures.iter().filter(|t| !t.path.as_os_str().is_empty()) {
                     let is_ytd = t.path.extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case("ytd")).unwrap_or(false);
-                    plan.outputs.push(Output { dest: format!("{}{prefix}{}", folder(d), d.kind.texture_file(d.number, t.letter, &t.race)), source: if is_ytd { Source::Copy(t.path.clone()) } else { Source::Image(t.path.clone()) } });
+                    plan.outputs.push(Output { dest: format!("{at}{}", d.kind.texture_file(d.number, t.letter, &t.race)), source: {
+                        let e = t.edit.clone().unwrap_or_default().and(&ytd_all);
+                        match (is_ytd, e.is_empty()) {
+                            (true, false) => Source::Optimize { from: t.path.clone(), model: false, all: e, all_formats: String::new(), named: vec![] },
+                            (true, true) => Source::Copy(t.path.clone()),
+                            (false, _) => Source::Image(t.path.clone()),
+                        }
+                    } });
                 }
             }
         }
+        if let Err(e) = dlc_extras(p, k, &root, meta_dir, &mut plan.outputs, &mut data, &mut plan.issues) {
+            plan.issues.push(Issue { sev: Sev::Error, code: "CLOTH_EXTRAS", message: format!("{}: {e:#}", p.dlc_label(k)), fix: "this is a bug in CRCK Explorer; the files were not written".into(), drawable: None });
+            plan.outputs.clear();
+            return plan;
+        }
     }
-    plan.outputs.push(Output { dest: "fxmanifest.lua".into(), source: Source::Bytes(fxmanifest(&p.name, &metas).into_bytes()) });
+    for c in &p.carried {
+        // carried files keep their path inside their resource: the control one, or the one of Rockstar's DLCs
+        let dest = match (split, &c.place) {
+            (false, _) => c.dest.clone(),
+            (true, Place::Control) => format!("{root}{}", c.dest),
+            (true, place) => {
+                let r = match place {
+                    Place::Stream(suffix) => format!("{}_{suffix}", p.name),
+                    _ => format!("{}_stream_base", p.name),
+                };
+                streams.insert(r.clone(), ());
+                format!("{r}/{}", c.dest)
+            }
+        };
+        plan.outputs.push(Output { dest, source: Source::Copy(c.source.clone()) });
+        if let Some(kind) = &c.data_file {
+            data.other.push((kind.clone(), c.dest.clone()));
+        }
+    }
+    plan.outputs.push(Output { dest: format!("{root}fxmanifest.lua"), source: Source::Bytes(fxmanifest(&p.name, &data).into_bytes()) });
+    if split {
+        for r in streams.keys() {
+            plan.outputs.push(Output { dest: format!("{r}/fxmanifest.lua"), source: Source::Bytes(stream_manifest(&p.name, r).into_bytes()) });
+        }
+        // the lines for server.cfg: the control resource and every stream resource
+        let lines: String = std::iter::once(format!("{}_control", p.name)).chain(streams.keys().cloned()).map(|r| format!("ensure {r}\n")).collect();
+        plan.outputs.push(Output { dest: format!("{}.cfg", p.name), source: Source::Bytes(format!("# the resources of clothing pack {}: add these lines to server.cfg (or exec this file)\n{lines}", p.name).into_bytes()) });
+        // every stream resource holds at most stream_limit drawables of a type and sex (checked here, it follows from the split)
+        let mut per: BTreeMap<(String, Sex, Kind), usize> = BTreeMap::new();
+        for d in p.drawables.iter().filter(|d| !d.ydd.as_os_str().is_empty() && !left_out(d.dlc)) {
+            *per.entry((stream_resource(p, d), d.sex, d.kind)).or_default() += 1;
+        }
+        if let Some(((r, sex, kind), n)) = per.iter().find(|(_, n)| **n > p.stream_limit.max(1)) {
+            plan.issues.push(Issue { sev: Sev::Error, code: "CLOTH_STREAM_LIMIT", message: format!("{r} would hold {n} {} {} drawables, more than {}", sex.label(), kind.name(), p.stream_limit), fix: "this is a bug in CRCK Explorer; the files were not written".into(), drawable: None });
+        }
+    }
     // two sources for one name would silently lose one of them
     let mut seen = std::collections::HashSet::new();
     for o in &plan.outputs {
@@ -405,10 +315,10 @@ pub fn plan_build(p: &Project) -> BuildPlan {
     plan
 }
 
-fn group(p: &Project) -> BTreeMap<(Sex, Kind), Vec<&Drawable>> {
-    let mut m: BTreeMap<(Sex, Kind), Vec<&Drawable>> = BTreeMap::new();
+fn group(p: &Project) -> BTreeMap<(usize, Sex, Kind), Vec<&Drawable>> {
+    let mut m: BTreeMap<(usize, Sex, Kind), Vec<&Drawable>> = BTreeMap::new();
     for d in &p.drawables {
-        m.entry((d.sex, d.kind)).or_default().push(d);
+        m.entry(d.group()).or_default().push(d);
     }
     m
 }
@@ -428,88 +338,499 @@ fn image_to_ytd(from: &Path, to: &Path) -> Result<()> {
     result
 }
 
-/// Write the plan into `<out_root>/<resource>/`. Refuses when that folder already holds any file the build would write.
-pub fn build(plan: &BuildPlan, out_root: &Path) -> Result<PathBuf> {
+/// What writing a plan did with the textures, over all files.
+#[derive(Debug, Clone, Default)]
+pub struct WriteStats {
+    pub files: usize,
+    /// files whose textures were made smaller
+    pub shrunk: usize,
+    /// the sizes on disk of the files that were made smaller, before and after
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    /// files that could not be optimized and were copied as they are (with why)
+    pub copied_instead: Vec<String>,
+}
+
+impl WriteStats {
+    fn add(&mut self, o: Written) {
+        self.files += 1;
+        if o.shrunk {
+            self.shrunk += 1;
+            self.bytes_before += o.before;
+            self.bytes_after += o.after;
+        }
+        self.copied_instead.extend(o.fallback);
+    }
+}
+
+#[derive(Debug, Default)]
+struct Written {
+    shrunk: bool,
+    before: u64,
+    after: u64,
+    fallback: Option<String>,
+}
+
+fn encode(format: &Option<String>) -> Result<Option<rage_formats::EncodeFormat>> {
+    format.as_deref().map(|f| rage_formats::EncodeFormat::parse(f).with_context(|| format!("unknown texture format '{f}'"))).transpose()
+}
+
+/// Is a texture of `w` x `h` in `format` changed by `e`?
+fn changes(e: &TexEdit, w: u32, h: u32, format: &str) -> bool {
+    e.max.is_some_and(|m| w.max(h) > m) || e.format.as_deref().and_then(rage_formats::EncodeFormat::parse).is_some_and(|f| !format.eq_ignore_ascii_case(&f.texture_format().to_string()))
+}
+
+/// Write a model with its embedded textures changed: per texture its own choice (by name) on top of the edit for all of them
+/// (when its format is one of `all_formats`). Textures with the same change are done together. True when anything changed.
+fn optimize_model(from: &Path, to: &Path, all: &TexEdit, all_formats: &str, named: &[(String, TexEdit)]) -> Result<bool> {
+    let rows = crate::yddtools::report(from)?;
+    let formats = crate::yddtools::parse_formats(all_formats)?;
+    let mut groups: BTreeMap<(Option<u32>, Option<String>), Vec<String>> = BTreeMap::new();
+    for r in &rows {
+        let own = named.iter().find(|(n, _)| n.eq_ignore_ascii_case(&r.name)).map(|x| x.1.clone()).unwrap_or_default();
+        let general = if crate::yddtools::matches_formats(r.format, &formats) { all.clone() } else { TexEdit::default() };
+        let e = own.and(&general);
+        if changes(&e, r.width, r.height, &r.format.to_string()) {
+            groups.entry((e.max, e.format.clone())).or_default().push(r.name.clone());
+        }
+    }
+    if groups.is_empty() {
+        return Ok(false);
+    }
+    // one pass per change, through temporary files next to the output
+    let mut current = from.to_path_buf();
+    let mut temps = vec![];
+    let result = (|| -> Result<()> {
+        for (k, ((max, format), names)) in groups.iter().enumerate() {
+            let next = to.with_extension(format!("crck-tmp{k}.ydd"));
+            let opts = crate::yddtools::YddOptimizeOptions { base: crate::ytdtools::OptimizeOptions { max_size: *max, format_override: encode(format)?, ..Default::default() }, exact_names: names.clone(), write_unchanged: true, ..Default::default() };
+            crate::yddtools::optimize(&current, &next, &opts)?;
+            temps.push(next.clone());
+            current = next;
+        }
+        fs::rename(&current, to).or_else(|_| fs::copy(&current, to).map(|_| ())).with_context(|| format!("writing {}", to.display()))?;
+        Ok(())
+    })();
+    for t in temps {
+        let _ = fs::remove_file(t);
+    }
+    result.map(|_| true)
+}
+
+/// Write one output. Optimized files: a `.ytd` or model that the changes do not touch is copied; a file the optimizer cannot
+/// read is copied as it is (and said).
+fn write_output(o: &Output, to: &Path) -> Result<Written> {
+    if let Some(dir) = to.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    match &o.source {
+        Source::Copy(from) => {
+            fs::copy(from, to).with_context(|| format!("copying {} to {}", file_of(from), to.display()))?;
+        }
+        Source::Image(from) => image_to_ytd(from, to)?,
+        Source::Bytes(b) => fs::write(to, b).with_context(|| format!("writing {}", to.display()))?,
+        Source::Optimize { from, model, all, all_formats, named } => {
+            let before = fs::metadata(from).map(|m| m.len()).unwrap_or(0);
+            let tried = (|| -> Result<bool> {
+                if *model {
+                    optimize_model(from, to, all, all_formats, named)
+                } else {
+                    let rows = crate::ytdtools::report(from)?;
+                    if !rows.iter().any(|r| changes(all, r.width, r.height, &r.format)) {
+                        return Ok(false);
+                    }
+                    crate::ytdtools::optimize(from, to, &crate::ytdtools::OptimizeOptions { max_size: all.max, format_override: encode(&all.format)?, ..Default::default() })?;
+                    Ok(true)
+                }
+            })();
+            let (shrunk, fallback) = match tried {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(format!("{}: {e:#}", from.display()))),
+            };
+            if !shrunk {
+                // nothing to do, or the optimizer could not: the file as it is (a copy keeps its time, for updates)
+                fs::copy(from, to).with_context(|| format!("copying {} to {}", file_of(from), to.display()))?;
+            }
+            let after = fs::metadata(to).map(|m| m.len()).unwrap_or(before);
+            return Ok(Written { shrunk, before, after, fallback });
+        }
+    }
+    Ok(Written::default())
+}
+
+impl Source {
+    /// what an optimized output is made with (an update makes it again when this changes)
+    fn signature(&self) -> Option<String> {
+        match self {
+            Source::Optimize { all, all_formats, named, .. } => Some(format!("{all:?} {} {named:?}", all_formats.to_lowercase())),
+            _ => None,
+        }
+    }
+}
+
+/// the optimized outputs and what each was made with, one `dest<TAB>signature` line each
+fn signatures(plan: &BuildPlan) -> String {
+    plan.outputs.iter().filter_map(|o| o.source.signature().map(|s| format!("{}\t{s}\n", o.dest.to_lowercase()))).collect()
+}
+
+/// Write outputs on all cores; stops at the first error. Returns what was written (to take back) and the error, if any.
+fn write_all(items: &[(&Output, PathBuf)], stats: &std::sync::Mutex<WriteStats>, progress: &(dyn Fn(usize, usize) + Sync)) -> (Vec<PathBuf>, Option<anyhow::Error>) {
+    use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Mutex};
+    let (next, done, failed) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicBool::new(false));
+    let written: Mutex<Vec<PathBuf>> = Mutex::new(vec![]);
+    let error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).min(items.len().max(1));
+    std::thread::scope(|sc| {
+        for _ in 0..workers {
+            sc.spawn(|| loop {
+                if failed.load(Ordering::Relaxed) {
+                    break;
+                }
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some((o, to)) = items.get(i) else { break };
+                match write_output(o, to) {
+                    Ok(w) => {
+                        written.lock().unwrap().push(to.clone());
+                        stats.lock().unwrap().add(w);
+                    }
+                    Err(e) => {
+                        // a half-written file is taken back with the rest
+                        written.lock().unwrap().push(to.clone());
+                        failed.store(true, Ordering::Relaxed);
+                        error.lock().unwrap().get_or_insert(e);
+                    }
+                }
+                progress(done.fetch_add(1, Ordering::Relaxed) + 1, items.len());
+            });
+        }
+    });
+    (written.into_inner().unwrap(), error.into_inner().unwrap())
+}
+
+fn check_sources(plan: &BuildPlan) -> Result<()> {
     if plan.errors() > 0 || plan.outputs.is_empty() {
         bail!("the pack has {} error(s); nothing was written", plan.errors().max(1));
     }
-    let dir = out_root.join(&plan.resource);
-    if let Some(o) = plan.outputs.iter().find(|o| dir.join(&o.dest).exists()) {
-        bail!("{} already exists; nothing was written (choose another folder or remove the old build)", dir.join(&o.dest).display());
-    }
     for o in &plan.outputs {
-        if let Source::Copy(p) | Source::Image(p) = &o.source {
+        if let Source::Copy(p) | Source::Image(p) | Source::Optimize { from: p, .. } = &o.source {
             if !p.is_file() {
                 bail!("{} is missing; nothing was written", p.display());
             }
         }
     }
-    let mut written: Vec<PathBuf> = vec![];
-    let result = (|| -> Result<()> {
-        for o in &plan.outputs {
-            let to = dir.join(&o.dest);
-            fs::create_dir_all(to.parent().unwrap_or(&dir))?;
-            match &o.source {
-                Source::Copy(from) => {
-                    fs::copy(from, &to).with_context(|| format!("copying {} to {}", file_of(from), to.display()))?;
-                }
-                Source::Image(from) => image_to_ytd(from, &to)?,
-                Source::Bytes(b) => fs::write(&to, b).with_context(|| format!("writing {}", to.display()))?,
-            }
-            written.push(to);
-        }
-        Ok(())
-    })();
-    if result.is_err() {
+    Ok(())
+}
+
+/// the file next to the build that says what each optimized file was made with
+const STAMP: &str = ".crck-build";
+
+/// Write the plan into `<out_root>/<resource>/`. Refuses when that folder already holds any file the build would write.
+pub fn build(plan: &BuildPlan, out_root: &Path) -> Result<PathBuf> {
+    build_with(plan, out_root, &|_, _| {}).map(|x| x.0)
+}
+
+/// [`build`], with progress (files done, files in all) and what happened to the textures.
+pub fn build_with(plan: &BuildPlan, out_root: &Path, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<(PathBuf, WriteStats)> {
+    check_sources(plan)?;
+    let dir = out_root.join(&plan.resource);
+    if let Some(o) = plan.outputs.iter().find(|o| dir.join(&o.dest).exists()) {
+        bail!("{} already exists; nothing was written (choose another folder or remove the old build)", dir.join(&o.dest).display());
+    }
+    let items: Vec<(&Output, PathBuf)> = plan.outputs.iter().map(|o| (o, dir.join(&o.dest))).collect();
+    let stats = std::sync::Mutex::new(WriteStats::default());
+    let (written, error) = write_all(&items, &stats, progress);
+    if let Some(e) = error {
         // a half-written pack is worse than none: take back what this build wrote
         for w in &written {
             let _ = fs::remove_file(w);
         }
+        return Err(e);
     }
-    result?;
-    Ok(dir)
+    fs::write(dir.join(STAMP), signatures(plan))?;
+    Ok((dir, stats.into_inner().unwrap()))
+}
+
+/// What [`build_update`] did.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateReport {
+    pub written: usize,
+    pub unchanged: usize,
+    /// files in the build's resource folders that the plan no longer has (removed only when asked)
+    pub stale: Vec<PathBuf>,
+    pub removed_stale: bool,
+    pub stats: WriteStats,
+}
+
+/// Is the file at `to` already what `source` would write? Copies: same size and modified time (a copy keeps the time), or the
+/// same bytes when the sizes match and the file is small; generated bytes: the same bytes; images and optimized files: newer
+/// than their source (and made with the same texture changes, `same_settings`).
+fn up_to_date(source: &Source, to: &Path, same_settings: bool) -> bool {
+    let Ok(have) = fs::metadata(to) else { return false };
+    let newer = |from: &Path| fs::metadata(from).and_then(|m| m.modified()).ok().zip(have.modified().ok()).is_some_and(|(a, b)| b >= a);
+    match source {
+        Source::Bytes(b) => have.len() == b.len() as u64 && fs::read(to).is_ok_and(|x| x == *b),
+        Source::Copy(from) => {
+            let Ok(want) = fs::metadata(from) else { return false };
+            if want.len() != have.len() {
+                return false;
+            }
+            if want.modified().ok() == have.modified().ok() {
+                return true;
+            }
+            want.len() <= 1 << 20 && fs::read(from).ok() == fs::read(to).ok()
+        }
+        Source::Image(from) => newer(from),
+        Source::Optimize { from, .. } => same_settings && newer(from),
+    }
+}
+
+/// Write the plan over an earlier build in `out_root`: only files that changed are written, the others are left alone (optimized
+/// files are made again when the texture settings changed). Files of the build's resource folders that the plan no longer has are
+/// listed, and deleted only with `remove_stale`. A file that cannot be written stops the update (what was written stays: the
+/// folder is a build again once the update runs through).
+pub fn build_update(plan: &BuildPlan, out_root: &Path, remove_stale: bool) -> Result<UpdateReport> {
+    build_update_with(plan, out_root, remove_stale, &|_, _| {})
+}
+
+pub fn build_update_with(plan: &BuildPlan, out_root: &Path, remove_stale: bool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<UpdateReport> {
+    check_sources(plan)?;
+    let dir = out_root.join(&plan.resource);
+    // what each optimized file of the earlier build was made with
+    let before: HashMap<String, String> = fs::read_to_string(dir.join(STAMP)).unwrap_or_default().lines().filter_map(|l| l.split_once('\t').map(|(d, s)| (d.to_string(), s.to_string()))).collect();
+    let mut report = UpdateReport::default();
+    let mut items: Vec<(&Output, PathBuf)> = vec![];
+    for o in &plan.outputs {
+        let to = dir.join(&o.dest);
+        let same_settings = o.source.signature().is_none_or(|s| before.get(&o.dest.to_lowercase()) == Some(&s));
+        // a file optimized before and copied now (its changes were taken off) is written again
+        let was_optimized = o.source.signature().is_none() && before.contains_key(&o.dest.to_lowercase());
+        if !was_optimized && up_to_date(&o.source, &to, same_settings) {
+            report.unchanged += 1;
+        } else {
+            items.push((o, to));
+        }
+    }
+    let stats = std::sync::Mutex::new(WriteStats::default());
+    // the stamp goes first: a stopped update is made again with these settings
+    fs::create_dir_all(&dir)?;
+    let (written, error) = write_all(&items, &stats, progress);
+    report.written = written.len();
+    if let Some(e) = error {
+        let _ = fs::remove_file(dir.join(STAMP));
+        return Err(e);
+    }
+    fs::write(dir.join(STAMP), signatures(plan))?;
+    report.stats = stats.into_inner().unwrap();
+    // the build's own folders: the resource, or (control + streams) every <project>_control / <project>_stream... folder there,
+    // also those the plan no longer has (a stream resource that emptied)
+    let wanted: std::collections::HashSet<String> = plan.outputs.iter().map(|o| o.dest.to_lowercase()).chain(std::iter::once(STAMP.to_string())).collect();
+    let roots: Vec<String> = if plan.resource.is_empty() {
+        let (control, stream) = (format!("{}_control", plan.project).to_lowercase(), format!("{}_stream", plan.project).to_lowercase());
+        fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| {
+            let l = n.to_lowercase();
+            l == control || l.starts_with(&stream)
+        }).collect()
+    } else {
+        vec![String::new()]
+    };
+    for r in roots {
+        let mut files = vec![];
+        walk_files(&dir.join(&r), &mut files);
+        for f in files {
+            let rel = f.strip_prefix(&dir).unwrap_or(&f).to_string_lossy().replace('\\', "/").to_lowercase();
+            if !wanted.contains(&rel) {
+                report.stale.push(f);
+            }
+        }
+    }
+    if remove_stale {
+        for f in &report.stale {
+            fs::remove_file(f).with_context(|| format!("removing {}", f.display()))?;
+        }
+        report.removed_stale = true;
+    }
+    Ok(report)
+}
+
+/// The textures of one kind (in `.ytd` files, or embedded in models) by their longest side.
+#[derive(Debug, Clone, Default)]
+pub struct TextureSizes {
+    pub textures: usize,
+    /// pixel data, all mip levels, as the game holds it in memory (the files store it compressed)
+    pub bytes: u64,
+    /// the size of the files these textures are in, on disk
+    pub file_bytes: u64,
+    /// format -> (textures, bytes in memory)
+    pub by_format: BTreeMap<String, (usize, u64)>,
+    /// about how much smaller the files get on disk: per file, its size times the share of its pixel data that goes
+    pub file_saved: u64,
+    /// longest side (rounded up to a power of two) -> (textures, bytes)
+    pub by_side: BTreeMap<u32, (usize, u64)>,
+    /// with the settings given: how many are over the size, and about how many bytes shrinking them saves
+    pub over: usize,
+    pub saved: u64,
+}
+
+impl TextureSizes {
+    /// add one texture; returns the bytes shrinking it would save
+    fn add(&mut self, w: u32, h: u32, format: &str, bytes: usize, max: Option<u32>) -> u64 {
+        let side = w.max(h).max(1);
+        let f = self.by_format.entry(format.to_string()).or_default();
+        f.0 += 1;
+        f.1 += bytes as u64;
+        self.textures += 1;
+        self.bytes += bytes as u64;
+        let e = self.by_side.entry(side.next_power_of_two()).or_default();
+        e.0 += 1;
+        e.1 += bytes as u64;
+        if let Some(m) = max.filter(|m| side > *m) {
+            // the pixel data goes with the area: the longest side scaled to the cap
+            let kept = bytes as f64 * (m as f64 / side as f64).powi(2);
+            let saved = (bytes as f64 - kept).max(0.0) as u64;
+            self.over += 1;
+            self.saved += saved;
+            return saved;
+        }
+        0
+    }
+
+    /// one file's textures are in: its share of the saving on disk
+    fn file(&mut self, on_disk: u64, bytes: u64, saved: u64) {
+        self.file_bytes += on_disk;
+        if bytes > 0 {
+            self.file_saved += (on_disk as f64 * saved as f64 / bytes as f64) as u64;
+        }
+    }
+}
+
+/// How big the project's textures are, and what the texture settings `opt` would save.
+#[derive(Debug, Clone, Default)]
+pub struct SizeReport {
+    pub ytd_files: usize,
+    pub model_files: usize,
+    pub ytd: TextureSizes,
+    /// embedded textures of the formats `opt` picks (all when it names none)
+    pub embedded: TextureSizes,
+    /// embedded textures of other formats (left alone)
+    pub embedded_other: TextureSizes,
+    pub unreadable: Vec<String>,
+}
+
+/// Read every texture of the project (`.ytd` files and the textures embedded in its models), on all cores. `progress` gets
+/// (files done, files in all).
+pub fn texture_sizes(p: &Project, opt: &TextureOptimize, progress: &(dyn Fn(usize, usize) + Sync)) -> SizeReport {
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Mutex};
+    let mut files: Vec<(PathBuf, bool)> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for d in &p.drawables {
+        for m in std::iter::once(&d.ydd).chain(d.alternates.iter().map(|a| &a.1)) {
+            if !m.as_os_str().is_empty() && seen.insert(m.clone()) {
+                files.push((m.clone(), true));
+            }
+        }
+        for t in &d.textures {
+            if t.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ytd")) && seen.insert(t.path.clone()) {
+                files.push((t.path.clone(), false));
+            }
+        }
+    }
+    let formats = crate::yddtools::parse_formats(&opt.ydd_formats).unwrap_or_default();
+    let report = Mutex::new(SizeReport { ytd_files: files.iter().filter(|f| !f.1).count(), model_files: files.iter().filter(|f| f.1).count(), ..Default::default() });
+    let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).min(files.len().max(1));
+    std::thread::scope(|sc| {
+        for _ in 0..workers {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some((f, model)) = files.get(i) else { break };
+                let on_disk = fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+                if *model {
+                    match crate::yddtools::report(f) {
+                        Ok(rows) => {
+                            let mut r = report.lock().unwrap();
+                            let (mut bytes, mut saved) = (0u64, 0u64);
+                            for t in rows {
+                                bytes += t.bytes as u64;
+                                if crate::yddtools::matches_formats(t.format, &formats) {
+                                    saved += r.embedded.add(t.width, t.height, &t.format.to_string(), t.bytes, opt.ydd_max);
+                                } else {
+                                    r.embedded_other.add(t.width, t.height, &t.format.to_string(), t.bytes, None);
+                                }
+                            }
+                            r.embedded.file(on_disk, bytes, saved);
+                        }
+                        Err(e) => report.lock().unwrap().unreadable.push(format!("{}: {e:#}", f.display())),
+                    }
+                } else {
+                    match crate::ytdtools::report(f) {
+                        Ok(rows) => {
+                            let mut r = report.lock().unwrap();
+                            let (mut bytes, mut saved) = (0u64, 0u64);
+                            for t in rows {
+                                bytes += t.bytes as u64;
+                                saved += r.ytd.add(t.width, t.height, &t.format, t.bytes, opt.ytd_max);
+                            }
+                            r.ytd.file(on_disk, bytes, saved);
+                        }
+                        Err(e) => report.lock().unwrap().unreadable.push(format!("{}: {e:#}", f.display())),
+                    }
+                }
+                progress(done.fetch_add(1, Ordering::Relaxed) + 1, files.len());
+            });
+        }
+    });
+    report.into_inner().unwrap()
+}
+
+/// The report as text: per kind, the textures by longest side, and the estimate.
+pub fn format_sizes(r: &SizeReport, opt: &TextureOptimize) -> String {
+    let mb = |b: u64| format!("{:.1} MB", b as f64 / 1_048_576.0);
+    let mut s = String::new();
+    let mut part = |title: &str, t: &TextureSizes, max: Option<u32>| {
+        let disk = if t.file_bytes > 0 { format!(" ({} on disk, compressed)", mb(t.file_bytes)) } else { String::new() };
+        s += &format!("{title}: {} textures, {} in memory{disk}\n", t.textures, mb(t.bytes));
+        for (side, (n, b)) in &t.by_side {
+            s += &format!("  up to {side:>5} px: {n:>6} textures, {:>10}\n", mb(*b));
+        }
+        s += &format!("  by format: {}\n", t.by_format.iter().map(|(f, (n, b))| format!("{f} {n} ({})", mb(*b))).collect::<Vec<_>>().join(", "));
+        if let Some(m) = max {
+            let share = if t.bytes > 0 { t.saved as f64 / t.bytes as f64 } else { 0.0 };
+            // on disk: per file, as much of its size as of its pixel data (big textures compress differently, so less than in memory)
+            let disk = if t.file_bytes > 0 { format!(", about {} on disk", mb(t.file_saved)) } else { String::new() };
+            s += &format!("  over {m} px: {} textures; shrinking them saves about {} in memory ({:.0}%){disk}\n", t.over, mb(t.saved), share * 100.0);
+        }
+    };
+    part(&format!("texture dictionaries ({} .ytd files)", r.ytd_files), &r.ytd, opt.ytd_max);
+    let which = if opt.ydd_formats.trim().is_empty() { "all formats".to_string() } else { opt.ydd_formats.clone() };
+    part(&format!("embedded in models ({} models; {which})", r.model_files), &r.embedded, opt.ydd_max);
+    if r.embedded_other.textures > 0 {
+        part("embedded in models, other formats (left alone)", &TextureSizes { file_bytes: 0, file_saved: 0, ..r.embedded_other.clone() }, None);
+    }
+    if !r.unreadable.is_empty() {
+        s += &format!("{} file(s) could not be read (they are copied as they are), for example {}\n", r.unreadable.len(), r.unreadable[0]);
+    }
+    s
+}
+
+fn walk_files(d: &Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk_files(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clothing::{Texture, ANCHORS};
+    use crate::clothing::Texture;
 
     fn d(sex: Sex, kind: Kind, number: u32, ydd: &Path, textures: &[(&Path, char)]) -> Drawable {
-        Drawable { sex, kind, number, source_number: number, ydd: ydd.to_path_buf(), race: if kind.is_prop() { String::new() } else { "u".into() }, cloth: None, alternates: vec![], textures: textures.iter().map(|(p, l)| Texture { path: p.to_path_buf(), letter: *l, race: if kind.is_prop() { String::new() } else { "uni".into() } }).collect() }
-    }
-
-    #[test]
-    fn the_anchor_names_are_the_games() {
-        let s = Schema::builtin();
-        let e = s.meta_enums.values().find(|e| e.entries.iter().any(|(h, _)| *h == rage_joaat("ANCHOR_HEAD"))).expect("the anchor enum");
-        for (i, name) in ANCHOR_ENUM.iter().enumerate() {
-            assert_eq!(e.entries.iter().find(|(h, _)| *h == rage_joaat(name)).map(|x| x.1), Some(i as i32), "{name} is anchor {i}");
-        }
-        assert_eq!(ANCHORS.len(), ANCHOR_ENUM.len());
-    }
-
-    #[test]
-    fn a_ymt_is_a_valid_meta_file_that_reads_back_as_meant() {
-        let mut shape = Shape::default();
-        shape.components.insert(3, vec![(2, false), (1, true)]);
-        shape.components.insert(11, vec![(3, false)]);
-        shape.props.insert(0, vec![1, 2]);
-        shape.props.insert(1, vec![4]);
-        let bytes = ymt_bytes(&shape, "MyPack").unwrap();
-        assert_eq!(&bytes[..4], b"RSC7");
-        let (info, _, _) = rage_formats::parse_ymt(&bytes).expect("the older reader of rage-formats reads it too");
-        assert_eq!(info.avail_comp, [255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 1]);
-        assert_eq!(info.component_data.len(), 2);
-        assert_eq!(info.component_data[0].num_avail_tex, 3);
-        let back = dump_meta(&bytes).unwrap();
-        assert_eq!(Shape::of_tree(&back.root), shape);
-        let xml = to_xml(&back.root, &NameTable::core());
-        assert!(xml.contains(&format!("hash_{:08X}", rage_joaat("mypack"))), "the DLC name is hashed in lowercase");
-        // and it survives a rewrite like every Meta file
-        assert!(crate::archetype::fidelity::check(&bytes).unwrap().is_lossless());
-        // no props, no components
-        ymt_bytes(&Shape::default(), "x").unwrap();
+        Drawable { sex, kind, number, source_number: number, ydd: ydd.to_path_buf(), race: if kind.is_prop() { String::new() } else { "u".into() }, textures: textures.iter().map(|(p, l)| Texture { path: p.to_path_buf(), letter: *l, race: if kind.is_prop() { String::new() } else { "uni".into() }, tex_id: None, edit: None }).collect(), ..Default::default() }
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -532,11 +853,11 @@ mod tests {
         let y = put(&d, "in/x.ydd", "1");
         let png = d.join("in/skin.png");
         image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255])).save(&png).unwrap();
-        let p = Project { archived: vec![], sorted: false, name: "imgpack".into(), limit: 128, drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y, &[(&png, 'a')])] };
+        let p = Project { name: "imgpack".into(), limit: 128, drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y, &[(&png, 'a')])], ..Default::default() };
         let plan = plan_build(&p);
         assert_eq!(plan.errors(), 0, "{:?}", plan.issues);
         let out = build(&plan, &d.join("out")).unwrap();
-        let ytd = out.join("stream/mp_m_freemode_01_imgpack^jbib_diff_000_a_uni.ytd");
+        let ytd = out.join("stream/mp_m_freemode_01_imgpack_1^jbib_diff_000_a_uni.ytd");
         let (textures, _) = crate::pipeline::read_ytd(&ytd).expect("the output is a texture dictionary");
         assert_eq!(textures.len(), 1);
         assert_eq!(textures[0].name, "jbib_diff_000_a_uni");
@@ -552,39 +873,39 @@ mod tests {
         let mut second = d_(Sex::Male, Kind::Component(11), 1, &y2, &[(&t3, 'a')]);
         second.cloth = Some(cloth);
         let p = Project {
-            archived: vec![], sorted: false,
             name: "mypack".into(),
             limit: 128,
             drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y1, &[(&t1, 'a'), (&t2, 'b')]), second, d_(Sex::Male, Kind::Prop(0), 0, &yh, &[(&th, 'a')]), d_(Sex::Female, Kind::Component(3), 0, &y1, &[(&t1, 'a')])],
+            ..Default::default()
         };
         let plan = plan_build(&p);
         assert_eq!(plan.errors(), 0, "{:?}", plan.issues);
         let dests: Vec<&str> = plan.outputs.iter().map(|o| o.dest.as_str()).collect();
         for want in [
             "fxmanifest.lua",
-            "mp_m_freemode_01_mypack.meta",
-            "mp_f_freemode_01_mypack.meta",
-            "stream/mp_m_freemode_01_mypack.ymt",
-            "stream/mp_f_freemode_01_mypack.ymt",
-            "stream/mp_m_freemode_01_mypack^jbib_000_u.ydd",
-            "stream/mp_m_freemode_01_mypack^jbib_diff_000_a_uni.ytd",
-            "stream/mp_m_freemode_01_mypack^jbib_diff_000_b_uni.ytd",
-            "stream/mp_m_freemode_01_mypack^jbib_001_u.yld",
-            "stream/mp_m_freemode_01_p_mypack^p_head_000.ydd",
-            "stream/mp_m_freemode_01_p_mypack^p_head_diff_000_a.ytd",
-            "stream/mp_f_freemode_01_mypack^uppr_000_u.ydd",
+            "mp_m_freemode_01_mypack_1.meta",
+            "mp_f_freemode_01_mypack_1.meta",
+            "stream/mp_m_freemode_01_mypack_1.ymt",
+            "stream/mp_f_freemode_01_mypack_1.ymt",
+            "stream/mp_m_freemode_01_mypack_1^jbib_000_u.ydd",
+            "stream/mp_m_freemode_01_mypack_1^jbib_diff_000_a_uni.ytd",
+            "stream/mp_m_freemode_01_mypack_1^jbib_diff_000_b_uni.ytd",
+            "stream/mp_m_freemode_01_mypack_1^jbib_001_u.yld",
+            "stream/mp_m_freemode_01_p_mypack_1^p_head_000.ydd",
+            "stream/mp_m_freemode_01_p_mypack_1^p_head_diff_000_a.ytd",
+            "stream/mp_f_freemode_01_mypack_1^uppr_000_u.ydd",
         ] {
             assert!(dests.contains(&want), "{want} missing from {dests:#?}");
         }
         let manifest = plan.outputs.iter().find(|o| o.dest == "fxmanifest.lua").map(|o| if let Source::Bytes(b) = &o.source { String::from_utf8_lossy(b).to_string() } else { String::new() }).unwrap();
-        assert!(manifest.contains("data_file 'SHOP_PED_APPAREL_META_FILE' 'mp_m_freemode_01_mypack.meta'") && manifest.contains("'mp_f_freemode_01_mypack.meta',"), "{manifest}");
+        assert!(manifest.contains("data_file 'SHOP_PED_APPAREL_META_FILE' 'mp_m_freemode_01_mypack_1.meta'") && manifest.contains("'mp_f_freemode_01_mypack_1.meta',"), "{manifest}");
         // the shop meta passes the metadata validator
-        let meta = plan.outputs.iter().find(|o| o.dest == "mp_m_freemode_01_mypack.meta").map(|o| if let Source::Bytes(b) = &o.source { String::from_utf8_lossy(b).to_string() } else { String::new() }).unwrap();
+        let meta = plan.outputs.iter().find(|o| o.dest == "mp_m_freemode_01_mypack_1.meta").map(|o| if let Source::Bytes(b) = &o.source { String::from_utf8_lossy(b).to_string() } else { String::new() }).unwrap();
         assert_eq!(crate::metaxml::check(&meta).errors(), 0, "{meta}");
         // build, then refuse to build over it
         let out = build(&plan, &d.join("out")).unwrap();
-        assert!(out.join("stream").join("mp_m_freemode_01_mypack^jbib_diff_000_a_uni.ytd").is_file());
-        assert_eq!(fs::read_to_string(out.join("stream/mp_m_freemode_01_mypack^jbib_diff_000_a_uni.ytd")).unwrap(), "a");
+        assert!(out.join("stream").join("mp_m_freemode_01_mypack_1^jbib_diff_000_a_uni.ytd").is_file());
+        assert_eq!(fs::read_to_string(out.join("stream/mp_m_freemode_01_mypack_1^jbib_diff_000_a_uni.ytd")).unwrap(), "a");
         let again = build(&plan, &d.join("out"));
         assert!(again.is_err() && again.unwrap_err().to_string().contains("already exists"));
         let _ = fs::remove_dir_all(&d);
@@ -598,11 +919,11 @@ mod tests {
         let mut second = d_(Sex::Male, Kind::Component(11), 1, &y2, &[(&t2, 'a')]);
         second.cloth = Some(put(&d, "in/c.yld", "cloth"));
         second.alternates = vec![(1, put(&d, "in/alt.ydd", "alt"))];
-        let p = Project { archived: vec![], sorted: false, name: "packa".into(), limit: 128, drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y1, &[(&t1, 'a'), (&t2, 'b')]), second, d_(Sex::Male, Kind::Prop(0), 0, &yh, &[(&th, 'a')]), d_(Sex::Female, Kind::Component(3), 0, &y1, &[(&t1, 'a')])] };
+        let p = Project { name: "packa".into(), limit: 128, drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y1, &[(&t1, 'a'), (&t2, 'b')]), second, d_(Sex::Male, Kind::Prop(0), 0, &yh, &[(&th, 'a')]), d_(Sex::Female, Kind::Component(3), 0, &y1, &[(&t1, 'a')])], ..Default::default() };
         let out = build(&plan_build(&p), &d.join("out")).unwrap();
-        assert_eq!(fs::read_to_string(out.join("stream/mp_m_freemode_01_packa^jbib_001_u_1.ydd")).unwrap(), "alt", "the alternate keeps its _1");
+        assert_eq!(fs::read_to_string(out.join("stream/mp_m_freemode_01_packa_1^jbib_001_u_1.ydd")).unwrap(), "alt", "the alternate keeps its _1");
         let back = crate::clothing::open_pack(&out).unwrap();
-        assert_eq!(back.name, "packa");
+        assert_eq!((back.name.as_str(), back.dlc_name(0, Sex::Female).as_str()), ("packa_1", "packa_1"), "an opened pack keeps its DLC name");
         assert_eq!(back.drawables.iter().map(|x| x.alternates.len()).sum::<usize>(), 1, "and comes back with its drawable");
         let shape = |p: &Project| {
             let mut v: Vec<(Sex, Kind, u32, usize, bool)> = p.drawables.iter().map(|x| (x.sex, x.kind, x.number, x.textures.len(), x.cloth.is_some())).collect();
@@ -611,8 +932,8 @@ mod tests {
         };
         assert_eq!(shape(&back), shape(&p));
         // and the reopened pack builds again into the same files, from the built files
-        let again = build(&plan_build(&Project { name: "packb".into(), ..back }), &d.join("out2")).unwrap();
-        assert!(again.join("stream/mp_m_freemode_01_packb^jbib_diff_000_b_uni.ytd").is_file());
+        let again = build(&plan_build(&Project { name: "packb".into(), dlcs: vec![crate::clothing::Dlc::default()], ..back }), &d.join("out2")).unwrap();
+        assert!(again.join("stream/mp_m_freemode_01_packb_1^jbib_diff_000_b_uni.ytd").is_file());
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -624,11 +945,11 @@ mod tests {
         p.sorted = true;
         let plan = plan_build(&p);
         let dests: Vec<&str> = plan.outputs.iter().map(|o| o.dest.as_str()).collect();
-        for want in ["stream/female/jbib/mp_f_freemode_01_srt^jbib_000_u.ydd", "stream/female/jbib/mp_f_freemode_01_srt^jbib_diff_000_a_uni.ytd", "stream/male/lowr/mp_m_freemode_01_srt^lowr_000_u.ydd", "stream/male/p_head/mp_m_freemode_01_p_srt^p_head_000.ydd", "stream/mp_f_freemode_01_srt.ymt"] {
+        for want in ["stream/female/jbib/mp_f_freemode_01_srt_1^jbib_000_u.ydd", "stream/female/jbib/mp_f_freemode_01_srt_1^jbib_diff_000_a_uni.ytd", "stream/male/lowr/mp_m_freemode_01_srt_1^lowr_000_u.ydd", "stream/male/p_head/mp_m_freemode_01_p_srt_1^p_head_000.ydd", "stream/mp_f_freemode_01_srt_1.ymt"] {
             assert!(dests.contains(&want), "{want} missing from {dests:#?}");
         }
         let out = build(&plan, &d.join("out")).unwrap();
-        assert!(out.join("stream/male/lowr/mp_m_freemode_01_srt^lowr_000_u.ydd").is_file());
+        assert!(out.join("stream/male/lowr/mp_m_freemode_01_srt_1^lowr_000_u.ydd").is_file());
         // a sorted pack opens again like a flat one
         assert_eq!(crate::clothing::open_pack(&out).unwrap().drawables.len(), 3);
         let _ = fs::remove_dir_all(&d);
@@ -639,7 +960,7 @@ mod tests {
         let d = temp("moves");
         let y = put(&d, "x.ydd", "1");
         let (ta, tb) = (put(&d, "a.ytd", "a"), put(&d, "b.ytd", "b"));
-        let mut p = Project { archived: vec![], sorted: false, name: "m".into(), limit: 128, drawables: (0..3).map(|n| d_(Sex::Male, Kind::Component(11), n, &y, &[(if n == 1 { &tb } else { &ta }, 'a')])).collect() };
+        let mut p = Project { name: "m".into(), limit: 128, drawables: (0..3).map(|n| d_(Sex::Male, Kind::Component(11), n, &y, &[(if n == 1 { &tb } else { &ta }, 'a')])).collect(), ..Default::default() };
         // remove 001: archived with its texture, the others keep their numbers
         let gone = p.archive(1).unwrap().clone();
         assert_eq!((p.drawables.len(), p.archived.len(), gone.textures[0].path.clone()), (2, 1, tb.clone()));
@@ -648,14 +969,14 @@ mod tests {
         assert!(p.archived.is_empty() && p.drawables.iter().any(|x| x.number == 3 && x.textures[0].path == tb));
         // 003 to 000: the two swap
         let i = p.drawables.iter().position(|x| x.number == 3).unwrap();
-        p.move_to(i, Sex::Male, Kind::Component(11), 0).unwrap();
+        p.move_to(i, (0, Sex::Male, Kind::Component(11), 0)).unwrap();
         assert_eq!(p.drawables.iter().find(|x| x.number == 0).unwrap().textures[0].path, tb);
         assert_eq!(p.drawables.iter().map(|x| x.number).collect::<Vec<_>>(), [0, 2, 3]);
         // to another component, onto a free number; then female; a prop is refused
         let i = p.drawables.iter().position(|x| x.number == 2).unwrap();
-        p.move_to(i, Sex::Female, Kind::Component(8), 0).unwrap();
+        p.move_to(i, (0, Sex::Female, Kind::Component(8), 0)).unwrap();
         assert!(p.drawables.iter().any(|x| (x.sex, x.kind, x.number) == (Sex::Female, Kind::Component(8), 0)));
-        assert!(p.move_to(0, Sex::Male, Kind::Prop(0), 0).is_err());
+        assert!(p.move_to(0, (0, Sex::Male, Kind::Prop(0), 0)).is_err());
         // a drawable from another pack lands after its group's last
         let mut other = Project { name: "o".into(), ..Default::default() };
         assert_eq!(other.add_next(p.drawables[0].clone()), 0);
@@ -674,11 +995,183 @@ mod tests {
     }
 
     #[test]
+    fn textures_over_the_size_are_shrunk_in_the_build_and_the_rest_is_copied() {
+        use crate::clothing::TextureOptimize;
+        let dir = temp("optimize");
+        let y = put(&dir, "x.ydd", "not a model");
+        let img = |name: &str, size: u32| {
+            let png = dir.join(format!("{name}.png"));
+            image::RgbaImage::from_fn(size, size, |x, y| image::Rgba([(x * 7) as u8, (y * 3) as u8, 90, 255])).save(&png).unwrap();
+            let ytd = dir.join(format!("{name}.ytd"));
+            crate::pipeline::files_to_ytd(&[png], &ytd, &crate::pipeline::Options::default()).unwrap();
+            ytd
+        };
+        let (big, small) = (img("big", 512), img("small", 64));
+        let mut p = Project { name: "opt".into(), drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y, &[(&big, 'a'), (&small, 'b')])], ..Default::default() };
+        p.optimize = TextureOptimize { ytd_max: Some(128), ydd_max: Some(256), ydd_formats: "ati2".into() };
+        let sizes = texture_sizes(&p, &p.optimize, &|_, _| {});
+        assert_eq!((sizes.ytd.textures, sizes.ytd.over, sizes.unreadable.len()), (2, 1, 1), "the model is not a real one: unreadable, copied");
+        assert!(sizes.ytd.saved > 0 && format_sizes(&sizes, &p.optimize).contains("over 128 px: 1 textures"));
+        let plan = plan_build(&p);
+        assert_eq!(plan.errors(), 0, "{:?}", plan.issues);
+        let (out, stats) = build_with(&plan, &dir.join("out"), &|_, _| {}).unwrap();
+        assert_eq!((stats.shrunk, stats.copied_instead.len()), (1, 1), "{stats:?}");
+        let built = |n: &str| crate::ytdtools::report(&out.join(format!("stream/mp_m_freemode_01_opt_1^jbib_diff_000_{n}_uni.ytd"))).unwrap()[0].width;
+        assert_eq!((built("a"), built("b")), (128, 64));
+        assert_eq!(fs::read(out.join("stream/mp_m_freemode_01_opt_1^jbib_diff_000_b_uni.ytd")).unwrap(), fs::read(&small).unwrap(), "under the size: the same file");
+        assert_eq!(fs::read(out.join("stream/mp_m_freemode_01_opt_1^jbib_000_u.ydd")).unwrap(), b"not a model", "unreadable: copied");
+        // an update with the same settings writes nothing; other settings make the optimized files again
+        assert_eq!(build_update(&plan, &dir.join("out"), false).unwrap().written, 0);
+        p.optimize.ytd_max = Some(256);
+        let r = build_update(&plan_build(&p), &dir.join("out"), false).unwrap();
+        assert_eq!((r.written, r.stats.shrunk), (2, 1), "the two texture files again, the model's settings did not change: {r:?}");
+        assert_eq!(built("a"), 256);
+        // the user's own choice for one texture: smaller and another format, on top of nothing for this build
+        p.optimize = TextureOptimize::default();
+        p.drawables[0].textures[1].edit = Some(crate::clothing::TexEdit { max: Some(32), format: Some("dxt5".into()) });
+        let r = build_update(&plan_build(&p), &dir.join("out"), false).unwrap();
+        assert_eq!(r.written, 3, "a back to as it is, b changed, the model copied again: {r:?}");
+        let b = crate::ytdtools::report(&out.join("stream/mp_m_freemode_01_opt_1^jbib_diff_000_b_uni.ytd")).unwrap();
+        assert_eq!((b[0].width, b[0].format.as_str()), (32, "DXT5"));
+        assert_eq!((built("a"), fs::read(out.join("stream/mp_m_freemode_01_opt_1^jbib_diff_000_a_uni.ytd")).unwrap() == fs::read(&big).unwrap()), (512, true));
+        // and is kept with the project
+        let f = dir.join("p.ragetoolkitclothes");
+        p.drawables[0].model_edits = vec![("jbib_000_n".into(), crate::clothing::TexEdit { max: Some(256), format: None })];
+        crate::clothing::project::save(&p, &f).unwrap();
+        let back = crate::clothing::project::load(&f).unwrap();
+        assert_eq!((back.drawables[0].textures[1].edit.clone(), back.drawables[0].model_edits.clone()), (p.drawables[0].textures[1].edit.clone(), p.drawables[0].model_edits.clone()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A real model (CRCK_MODEL) with embedded textures: each texture changed by its own choice, the others left alone.
+    #[test]
+    #[ignore = "needs a model with embedded textures: CRCK_MODEL=<.ydd>"]
+    fn a_real_model_gets_each_embedded_texture_changed_as_chosen() {
+        let from = PathBuf::from(std::env::var("CRCK_MODEL").expect("CRCK_MODEL"));
+        let rows = crate::yddtools::report(&from).unwrap();
+        assert!(rows.len() >= 2, "the model needs two embedded textures");
+        let (a, b) = (&rows[0], &rows[1]);
+        let named = vec![(a.name.to_uppercase(), TexEdit { max: Some(a.width.max(a.height) / 2), format: None }), (b.name.clone(), TexEdit { max: None, format: Some("bc7".into()) })];
+        let dir = temp("realmodel");
+        let to = dir.join("out.ydd");
+        assert!(optimize_model(&from, &to, &TexEdit::default(), "", &named).unwrap());
+        let after = crate::yddtools::report(&to).unwrap();
+        let find = |n: &str| after.iter().find(|r| r.name == n).unwrap();
+        println!("{a:?}\n -> {:?}\n{b:?}\n -> {:?}", find(&a.name), find(&b.name));
+        assert_eq!(find(&a.name).width.max(find(&a.name).height), a.width.max(a.height) / 2, "halved (the name in any case)");
+        assert_eq!(find(&b.name).format.to_string(), "BC7");
+        assert_eq!((find(&b.name).width, find(&b.name).height), (b.width, b.height), "only its format");
+        // and the model still reads as a model
+        assert!(!crate::model::placed_meshes(&to, crate::model::LodLevel::High).unwrap().is_empty());
+        assert!(!dir.read_dir().unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("crck-tmp")), "no temporary files left");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn control_and_streams_puts_metadata_in_one_resource_and_at_most_the_limit_per_type_in_each_stream() {
+        use crate::clothing::{Carried, Dlc, Layout, Place};
+        let dir = temp("layout");
+        let (y, t) = (put(&dir, "x.ydd", "1"), put(&dir, "t.ytd", "a"));
+        let mut drawables: Vec<Drawable> = (0..5).map(|n| d_(Sex::Male, Kind::Component(11), n, &y, &[(&t, 'a')])).collect();
+        drawables.push(d_(Sex::Female, Kind::Component(4), 0, &y, &[(&t, 'a')]));
+        drawables.push(d_(Sex::Male, Kind::Prop(0), 0, &y, &[(&t, 'a')]));
+        let mut second = d_(Sex::Male, Kind::Component(11), 0, &y, &[(&t, 'a')]);
+        second.dlc = 1;
+        drawables.push(second);
+        let mut rockstar = d_(Sex::Male, Kind::Component(11), 0, &y, &[(&t, 'a')]);
+        rockstar.dlc = 2;
+        drawables.push(rockstar);
+        let p = Project {
+            name: "pk".into(),
+            stream_limit: 2,
+            layout: Layout::ControlAndStreams,
+            dlcs: vec![Dlc::default(), Dlc::default(), Dlc { names: Some(("mp_m_2023_02".into(), "mp_f_2023_02".into())), creature: None, base: true, left_out: false, game_creature: None }],
+            carried: vec![Carried { place: Place::BaseStream, dest: "stream/mp_m_freemode_01_mp_m_heist3/mp_m_freemode_01_mp_m_heist3^hand_diff_000_a_uni.ytd".into(), source: t.clone(), data_file: None }],
+            drawables,
+            ..Default::default()
+        };
+        let plan = plan_build(&p);
+        assert_eq!(plan.errors(), 0, "{:?}", plan.issues);
+        let dests: Vec<&str> = plan.outputs.iter().map(|o| o.dest.as_str()).collect();
+        for want in [
+            "pk_control/fxmanifest.lua",
+            "pk_control/data/mp_m_freemode_01_pk_1.meta",
+            "pk_control/stream/mp_m_freemode_01_pk_1.ymt",
+            "pk_control/stream/mp_m_freemode_01_mp_m_2023_02.ymt",
+            "pk_stream_m1/fxmanifest.lua",
+            "pk_stream_m1/stream/mp_m_freemode_01_pk_1/mp_m_freemode_01_pk_1^jbib_001_u.ydd",
+            "pk_stream_m1_02/stream/mp_m_freemode_01_pk_1/mp_m_freemode_01_pk_1^jbib_002_u.ydd",
+            "pk_stream_m1_03/stream/mp_m_freemode_01_pk_1/mp_m_freemode_01_pk_1^jbib_004_u.ydd",
+            "pk_stream_m1/stream/mp_m_freemode_01_p_pk_1/mp_m_freemode_01_p_pk_1^p_head_000.ydd",
+            "pk_stream_f1/stream/mp_f_freemode_01_pk_1/mp_f_freemode_01_pk_1^lowr_diff_000_a_uni.ytd",
+            "pk_stream_m2/stream/mp_m_freemode_01_pk_2/mp_m_freemode_01_pk_2^jbib_000_u.ydd",
+            "pk_stream_base/stream/mp_m_freemode_01_mp_m_2023_02/mp_m_freemode_01_mp_m_2023_02^jbib_000_u.ydd",
+            "pk_stream_base/stream/mp_m_freemode_01_mp_m_heist3/mp_m_freemode_01_mp_m_heist3^hand_diff_000_a_uni.ytd",
+            "pk.cfg",
+        ] {
+            assert!(dests.contains(&want), "{want} missing from {dests:#?}");
+        }
+        let text = |dest: &str| plan.outputs.iter().find(|o| o.dest == dest).map(|o| if let Source::Bytes(b) = &o.source { String::from_utf8(b.clone()).unwrap() } else { String::new() }).unwrap();
+        assert!(text("pk_control/fxmanifest.lua").contains("data_file 'SHOP_PED_APPAREL_META_FILE' 'data/mp_m_freemode_01_pk_1.meta'"));
+        assert!(text("pk.cfg").contains("ensure pk_control\nensure pk_stream_base\n"));
+        // nothing but streamed files outside the control resource
+        assert!(plan.outputs.iter().filter(|o| o.dest.starts_with("pk_stream")).all(|o| o.dest.ends_with("/fxmanifest.lua") || o.dest.contains("/stream/")));
+        // build, then update: nothing changes, a change is written, a leftover is found
+        let out = dir.join("out");
+        build(&plan, &out).unwrap();
+        let again = build_update(&plan, &out, false).unwrap();
+        assert_eq!((again.written, again.stale.len()), (0, 0));
+        let mut q = p.clone();
+        q.drawables.retain(|x| !(x.dlc == 0 && x.kind == Kind::Component(11) && x.number == 4));
+        q.drawables[0].meta.flags = 2;
+        let r = build_update(&plan_build(&q), &out, false).unwrap();
+        assert!(r.written >= 1 && r.stale.len() == 3, "the YMT and meta change; jbib 004's model, texture and its stream resource's manifest are left: {r:?}");
+        let r = build_update(&plan_build(&q), &out, true).unwrap();
+        assert!(r.removed_stale && !out.join("pk_stream_m1_03/stream/mp_m_freemode_01_pk_1/mp_m_freemode_01_pk_1^jbib_004_u.ydd").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heels_hats_hidden_hair_and_first_person_get_their_files_and_manifest_lines() {
+        use crate::clothing::{extras, DrawableMeta};
+        let dir = temp("extras");
+        let (y, t) = (put(&dir, "x.ydd", "1"), put(&dir, "t.ytd", "a"));
+        let mut shoe = d_(Sex::Female, Kind::Component(6), 0, &y, &[(&t, 'a')]);
+        shoe.meta = DrawableMeta { expression_mods: [0.0, 0.0, 0.0, 0.0, 1.0], ..Default::default() };
+        let mut hat = d_(Sex::Male, Kind::Prop(0), 0, &y, &[(&t, 'a')]);
+        hat.meta = DrawableMeta { expression_mods: [-0.5, 0.0, 0.0, 0.0, 0.0], ..Default::default() };
+        let mut mask = d_(Sex::Male, Kind::Component(1), 0, &y, &[(&t, 'a')]);
+        mask.meta.hides_hair = true;
+        let mut jacket = d_(Sex::Male, Kind::Component(11), 0, &y, &[(&t, 'a')]);
+        jacket.alternates = vec![(1, y.clone())];
+        jacket.meta.first_person = Some(1);
+        let p = Project { name: "ext".into(), drawables: vec![shoe, hat, mask, jacket], ..Default::default() };
+        let plan = plan_build(&p);
+        assert_eq!(plan.errors(), 0, "{:?}", plan.issues);
+        let file = |dest: &str| plan.outputs.iter().find(|o| o.dest == dest).map(|o| if let Source::Bytes(b) = &o.source { b.clone() } else { vec![] }).unwrap_or_else(|| panic!("{dest} missing from {:#?}", plan.outputs.iter().map(|o| &o.dest).collect::<Vec<_>>()));
+        // one creature file for both sexes: the female shoe and the male hat
+        let creature = extras::read_creature(&file("stream/mp_creaturemetadata_ext_1.ymt")).unwrap();
+        assert_eq!(creature.iter().map(|e| (e.prop, e.var)).collect::<Vec<_>>(), [(false, 0), (true, 0)]);
+        let shop = String::from_utf8(file("mp_m_freemode_01_ext_1.meta")).unwrap();
+        assert!(shop.contains("<creatureMetaData>MP_CreatureMetadata_ext_1</creatureMetaData>"), "{shop}");
+        let (switches, _) = extras::read_alt_variations(&String::from_utf8(file("pedalternatevariations_ext_1.meta")).unwrap()).unwrap();
+        assert!(!switches.is_empty() && switches.iter().all(|w| w.sources == [extras::RawRef { dlc: "ext_1".into(), component: 1, index: 0 }]));
+        let fp = extras::read_first_person(&String::from_utf8(file("first_person_alternates_ext_1.meta")).unwrap()).unwrap();
+        assert_eq!(fp, [("MP_M_Freemode_01_ext_1/jbib_000_u".to_string(), 1)]);
+        let manifest = String::from_utf8(file("fxmanifest.lua")).unwrap();
+        for line in ["data_file 'ALTERNATE_VARIATIONS_FILE' 'pedalternatevariations_ext_1.meta'", "data_file 'PED_FIRST_PERSON_ALTERNATE_DATA' 'first_person_alternates_ext_1.meta'", "'first_person_alternates_ext_1.meta',"] {
+            assert!(manifest.contains(line), "{line} missing from {manifest}");
+        }
+        assert_eq!(crate::metaxml::check(&shop).errors(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn errors_stop_the_build_and_gaps_must_be_closed_first() {
         let d = temp("errors");
         let y = put(&d, "x.ydd", "1");
         let t = put(&d, "t.ytd", "a");
-        let mut p = Project { archived: vec![], sorted: false, name: "mypack".into(), limit: 128, drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y, &[(&t, 'a')]), d_(Sex::Male, Kind::Component(11), 2, &y, &[(&t, 'a')])] };
+        let mut p = Project { name: "mypack".into(), limit: 128, drawables: vec![d_(Sex::Male, Kind::Component(11), 0, &y, &[(&t, 'a')]), d_(Sex::Male, Kind::Component(11), 2, &y, &[(&t, 'a')])], ..Default::default() };
         let plan = plan_build(&p);
         assert!(plan.issues.iter().any(|i| i.code == "CLOTH_GAP_BUILD") && plan.outputs.is_empty());
         assert!(build(&plan, &d.join("out")).is_err());
@@ -691,19 +1184,22 @@ mod tests {
     }
 
     #[test]
-    fn a_big_pack_is_split_into_addons_and_each_numbers_from_zero() {
+    fn a_full_dlc_is_an_error_until_its_overflow_moves_to_the_next_dlcs_which_number_from_zero() {
         let d = temp("split");
         let y = put(&d, "x.ydd", "1");
         let t = put(&d, "t.ytd", "a");
-        let p = Project { archived: vec![], sorted: false, name: "big".into(), limit: 3, drawables: (0..7).map(|n| d_(Sex::Male, Kind::Component(3), n, &y, &[(&t, 'a')])).collect() };
-        let addons = split_addons(&p);
-        assert_eq!(addons.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["big_01", "big_02", "big_03"]);
-        assert_eq!(addons.iter().map(|a| a.drawables.len()).collect::<Vec<_>>(), [3, 3, 1]);
-        assert_eq!(addons[1].drawables.iter().map(|x| x.number).collect::<Vec<_>>(), [0, 1, 2]);
+        let mut p = Project { name: "big".into(), limit: 3, drawables: (0..7).map(|n| d_(Sex::Male, Kind::Component(3), n, &y, &[(&t, 'a')])).collect(), ..Default::default() };
+        assert!(plan_build(&p).issues.iter().any(|i| i.code == "CLOTH_LIMIT"), "nothing moves to another DLC without asking");
+        assert_eq!(p.split_full_dlcs(), 4);
+        let per_dlc: Vec<Vec<u32>> = (0..p.dlcs.len()).map(|k| p.drawables.iter().filter(|x| x.dlc == k).map(|x| x.number).collect()).collect();
+        assert_eq!(per_dlc, [vec![0, 1, 2], vec![0, 1, 2], vec![0]]);
         let plan = plan_build(&p);
         assert_eq!(plan.errors(), 0, "{:?}", plan.issues.iter().map(|i| &i.message).collect::<Vec<_>>());
         let dests: Vec<&str> = plan.outputs.iter().map(|o| o.dest.as_str()).collect();
-        assert!(dests.contains(&"stream/mp_m_freemode_01_big_02^uppr_000_u.ydd") && dests.contains(&"mp_m_freemode_01_big_03.meta"));
+        assert!(dests.contains(&"stream/mp_m_freemode_01_big_2^uppr_000_u.ydd") && dests.contains(&"mp_m_freemode_01_big_3.meta"), "{dests:#?}");
+        // adding more continues in the last DLC with room
+        assert_eq!(p.add_next(d_(Sex::Male, Kind::Component(3), 0, &y, &[(&t, 'a')])), 1);
+        assert_eq!(p.drawables.iter().filter(|x| x.dlc == 2).count(), 2);
         let _ = fs::remove_dir_all(&d);
     }
 }

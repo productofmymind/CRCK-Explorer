@@ -36,6 +36,12 @@ impl NameTable {
         Self::default()
     }
 
+    /// [`core`](Self::core), made once and shared: building it hashes every built-in name, which is slow to do per lookup.
+    pub fn core_shared() -> &'static Self {
+        static CORE: std::sync::OnceLock<NameTable> = std::sync::OnceLock::new();
+        CORE.get_or_init(Self::core)
+    }
+
     /// The built-in names: the shader parameter names, this crate's own list, then the meta names.
     pub fn core() -> Self {
         let mut t = Self::default();

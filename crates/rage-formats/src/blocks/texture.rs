@@ -15,7 +15,7 @@ use super::*;
 use crate::gen9::Edition;
 use crate::rage_joaat;
 use crate::resource::SYSTEM_BASE;
-use crate::ytd::{mip_chain_size, stride_for, to_ytd_layout, TextureFormat, YtdTexture, YTD_VERSION};
+use crate::ytd::{calc_pixel_data_size, layout_stride, mip_chain_size, stride_for, to_ytd_layout, TextureFormat, YtdTexture, YTD_VERSION};
 
 /// A `.ytd` of either edition as a legacy `.ytd` (resource version 13), the Gen9 → Legacy conversion for
 /// texture dictionaries. A legacy file comes back unchanged. See [`Texture::read_gen9`] for what a Gen9
@@ -143,6 +143,17 @@ impl Texture {
         })
     }
 
+    /// The stride the pixel data is laid out by: the stored one, or the one the format implies when the stored one is
+    /// wrong and the data read is that chain ([`layout_stride`]).
+    pub fn data_stride(&self, g: &Graph) -> u16 {
+        let fixed = layout_stride(self.format, self.width, self.height, self.stride);
+        let len = self.data.map_or(0, |d| g.get::<TextureData>(d).bytes.len());
+        if fixed != self.stride && len == calc_pixel_data_size(fixed, self.height, self.levels) { fixed } else { self.stride }
+    }
+
+    /// Whether the stored stride is not the one the format implies and the pixels are read by that one instead.
+    pub fn stride_was_fixed(&self, g: &Graph) -> bool { self.data_stride(g) != self.stride }
+
     pub fn to_ytd_texture(&self, g: &Graph) -> YtdTexture {
         YtdTexture {
             name: self.name_str(g).to_owned(),
@@ -152,7 +163,7 @@ impl Texture {
             depth: self.depth,
             format: self.format,
             levels: self.levels,
-            stride: self.stride,
+            stride: self.data_stride(g),
             pixel_data: self.data.map_or_else(Vec::new, |d| g.get::<TextureData>(d).bytes.clone()),
         }
     }
@@ -272,7 +283,17 @@ impl Texture {
         c.check()?;
         let name = read_string_block(r, g, name_ptr)?;
         let name_hash = name.map_or(0, |n| rage_joaat(&g.get::<StringBlock>(n).0.to_lowercase()));
-        let data = TextureData::read(r, g, data_ptr, stride, height, levels)?;
+        // a wrong stored stride (`layout_stride`): read the chain the format implies when it is there; the stored
+        // stride is still what is written back
+        let fixed = layout_stride(format, width, height, stride);
+        let data = if fixed == stride || data_ptr == 0 {
+            TextureData::read(r, g, data_ptr, stride, height, levels)?
+        } else {
+            match TextureData::read(r, g, data_ptr, fixed, height, levels) {
+                Ok(d) => d,
+                Err(_) => TextureData::read(r, g, data_ptr, stride, height, levels)?,
+            }
+        };
         let id = g.add(Texture {
             vft, name, name_hash, unknown_32h, usage: (usage_data & 0x1F) as u8, usage_flags: usage_data >> 5, extra_flags,
             width, height, depth, stride, format, levels, data,

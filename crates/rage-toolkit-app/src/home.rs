@@ -61,6 +61,7 @@ fn sections() -> Vec<(&'static str, Vec<Card>)> {
                 c("Images to YTD", "Drop images or folders: all into one YTD, or each image into its own.", ORANGE, Glyph::Picture, Go::Tool(Page::Textures), false),
                 c("Archetype editor", "Open a .ytyp, or start a new one, and edit its props, time archetypes and MLO interiors; checks before it saves.", VIOLET, Glyph::Cube, Go::Ytyp, false),
                 c("Clothing pack", "Drop .ydd models and .ytd textures; they are paired, numbered, checked and built into a FiveM clothing resource.", GREEN, Glyph::Shirt, Go::Tool(Page::Clothing), false),
+                c("Shrink model textures", "The textures inside .ydd / .ydr models (often ATI2 normal maps): scan a folder, shrink them to a size, write smaller copies.", ORANGE, Glyph::Picture, Go::Tool(Page::ModelTextures), false),
                 c("Batch rename", "Rename many files at once: numbers, texture letters, find and replace. Preview and undo.", VIOLET, Glyph::Rename, Go::Tool(Page::Rename), false),
             ],
         ),

@@ -51,12 +51,13 @@ pub mod meta_write;
 pub mod pso_write;
 #[cfg(feature = "encode")]
 pub mod texture_encode;
-mod rbf;
+pub mod rbf;
 
 pub use hash::rage_joaat;
 pub use blocks::ydr::{read_ydr, write_ydr, dump_ydr_xml, build_ydr_from_xml, build_ydr_from_xml_checked};
 pub use blocks::yft_xml::{dump_yft_xml, build_yft_from_xml, build_yft_from_xml_checked};
 pub use blocks::ybn::{read_ybn, write_ybn, dump_ybn_xml, build_ybn_from_xml, build_ybn_from_xml_checked};
+pub use blocks::ydd::{read_ydd, write_ydd, embedded_textures, drawable_embedded_textures, replace_texture, texture_of, EmbeddedTexture, YDD_VERSION};
 pub use blocks::{Graph, BlockId, Built};
 pub use math::{Vec2, Vec3, Vec4, Mat4};
 pub use resource::{build_rsc7, build_rsc7_with_flags, pack_pages, rsc7_page_count, PagedLayout, is_fxap, FXAP_MAGIC, build_rsc7_paged, prepare_rsc7, rsc7_flags_for_pages, rsc7_flags_for_size, resource_size_from_flags, resource_version_from_flags, prepare_rsc7_system, inflate_rsc7_system,

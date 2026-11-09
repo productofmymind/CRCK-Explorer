@@ -107,6 +107,21 @@ fn bounds_of(m: &MeshPart) -> (Vec3, Vec3) {
     (mn, mx)
 }
 
+/// What the Textures panel's menu asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TexAct {
+    ExportDds,
+    ExportPng,
+    Replace,
+    /// shrink a texture embedded in the model so its longer side is at most this
+    Shrink(u32),
+}
+
+/// The sizes a texture whose longer side is `side` can be shrunk to: each halving down to 64 px.
+fn shrink_sizes(side: u32) -> Vec<u32> {
+    std::iter::successors(Some(side / 2), |s| Some(s / 2)).take_while(|&s| s >= 64).collect()
+}
+
 struct TexRow {
     name: String,
     width: u32,
@@ -834,17 +849,80 @@ impl App {
         );
     }
 
-    /// 0 = export DDS, 1 = export PNG, 2 = replace
-    fn texture_action(&mut self, i: usize, action: u8) {
+    /// Where an edited model is saved: the file itself (a `.bak` is kept the first time), or, for a cached copy of a game
+    /// file or one of the game's own files, a place the user picks. None = cancelled.
+    fn model_destination(&self, model: &Path) -> Option<PathBuf> {
+        let cached = model.starts_with(rage_toolkit_core::game::cache_dir()) || self.warn_for_game_file(model).is_some();
+        if cached {
+            let ext = model.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            return rfd::FileDialog::new().set_title("Save the edited model as...").set_file_name(model.file_name().unwrap_or_default().to_string_lossy().to_string()).add_filter("Model", &[ext.as_str()]).save_file();
+        }
+        let ext = model.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        let bak = model.with_extension(format!("{ext}.bak"));
+        if !bak.exists() {
+            let _ = std::fs::copy(model, &bak);
+        }
+        Some(model.to_path_buf())
+    }
+
+    /// A texture embedded in the loaded model: export it, replace it, or shrink it and save the model.
+    fn embedded_texture_action(&mut self, name: String, action: TexAct) {
+        use rage_toolkit_core::yddtools;
+        let Some(model) = self.model.clone() else { return };
+        if let Err(e) = yddtools::model_kind(&model) {
+            self.status = format!("{name}: {e:#}");
+            return;
+        }
+        match action {
+            TexAct::ExportDds | TexAct::ExportPng => {
+                let (ext, label) = if action == TexAct::ExportDds { ("dds", "DirectDraw Surface") } else { ("png", "PNG image") };
+                if let Some(out) = rfd::FileDialog::new().set_file_name(format!("{name}.{ext}")).add_filter(label, &[ext]).save_file() {
+                    self.status = match yddtools::export_embedded(&model, &name, &out) {
+                        Ok(()) => format!("exported {name} to {}", out.display()),
+                        Err(e) => format!("export failed: {e:#}"),
+                    };
+                }
+            }
+            TexAct::Replace | TexAct::Shrink(_) => {
+                let img = if action == TexAct::Replace {
+                    let Some(img) = rfd::FileDialog::new().set_title(format!("Replace {name} with...")).add_filter("DDS or image", &["dds", "png", "jpg", "jpeg", "tga", "bmp", "webp"]).pick_file() else { return };
+                    Some(img)
+                } else {
+                    None
+                };
+                let Some(dest) = self.model_destination(&model) else { return };
+                let r = match (action, img) {
+                    (TexAct::Shrink(side), _) => yddtools::shrink_embedded(&model, &name, side, &dest),
+                    (_, Some(img)) => {
+                        let opts = rage_toolkit_core::texture::ReplaceOpts { keep_format: self.keep_format, keep_size: self.keep_size };
+                        yddtools::replace_embedded(&model, &name, &img, &dest, opts)
+                    }
+                    _ => return,
+                };
+                match r {
+                    Ok(msg) => {
+                        let bak = if dest == model { " (backup: .bak next to it)" } else { "" };
+                        self.status = format!("{msg}; saved to {}{bak}", dest.display());
+                        self.model = Some(dest);
+                        self.needs_reload = true;
+                    }
+                    Err(e) => self.status = format!("{name}: {e:#}"),
+                }
+            }
+        }
+    }
+
+    fn texture_action(&mut self, i: usize, action: TexAct) {
         let Some(t) = self.textures.get(i) else { return };
         let (name, source) = (t.name.clone(), t.source.clone());
         let Some(src_ytd) = source else {
-            self.status = format!("{name} is embedded in the model, not in a .ytd: export/replace works on texture dictionaries");
+            self.embedded_texture_action(name, action);
             return;
         };
         match action {
-            0 | 1 => {
-                let (ext, label) = if action == 0 { ("dds", "DirectDraw Surface") } else { ("png", "PNG image") };
+            TexAct::Shrink(_) => {}
+            TexAct::ExportDds | TexAct::ExportPng => {
+                let (ext, label) = if action == TexAct::ExportDds { ("dds", "DirectDraw Surface") } else { ("png", "PNG image") };
                 if let Some(out) = rfd::FileDialog::new().set_file_name(format!("{name}.{ext}")).add_filter(label, &[ext]).save_file() {
                     self.status = match rage_toolkit_core::texture::export_texture(&src_ytd, &name, &out) {
                         Ok(()) => format!("exported {name} to {}", out.display()),
@@ -852,7 +930,7 @@ impl App {
                     };
                 }
             }
-            _ => {
+            TexAct::Replace => {
                 let Some(img) = rfd::FileDialog::new().set_title(format!("Replace {name} with...")).add_filter("DDS or image", &["dds", "png", "jpg", "jpeg", "tga", "bmp", "webp"]).pick_file() else { return };
                 // files from the game are cached copies: never write over them, ask where to save instead; the same for one of
                 // the game's own loose files while the Settings warning is on
@@ -1383,7 +1461,7 @@ impl eframe::App for App {
             ui.separator();
             self.ui_parts(ui);
         });
-        let mut tex_action: Option<(usize, u8)> = None;
+        let mut tex_action: Option<(usize, TexAct)> = None;
         let (mut add_tex, mut find_tex, mut export_all) = (false, false, false);
         egui::Panel::right("textures").default_size(290.0).frame(theme::panel_frame()).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1425,27 +1503,45 @@ impl eframe::App for App {
             }
             let tf = self.tex_filter.trim().to_lowercase();
             let (ok, dim) = (crate::theme::ok(), crate::theme::dim());
+            // a texture embedded in a .ydd / .ydr can be edited; one in a .yft cannot be written back yet
+            let model_editable = self.model.as_deref().is_some_and(rage_toolkit_core::yddtools::is_model);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for (i, t) in self.textures.iter().enumerate() {
                     if !tf.is_empty() && !t.name.to_lowercase().contains(&tf) {
                         continue;
                     }
                     let selected = self.selected_texture == Some(i);
-                    let menu = |ui: &mut egui::Ui, act: &mut Option<(usize, u8)>| {
-                        if t.source.is_none() {
-                            ui.label("embedded in the model: not editable");
+                    let menu = |ui: &mut egui::Ui, act: &mut Option<(usize, TexAct)>| {
+                        let embedded = t.source.is_none();
+                        if embedded && !model_editable {
+                            ui.label("embedded in a .yft: not editable yet");
                         }
-                        ui.add_enabled_ui(t.source.is_some(), |ui| {
+                        ui.add_enabled_ui(!embedded || model_editable, |ui| {
+                            if embedded {
+                                let sizes = shrink_sizes(t.width.max(t.height));
+                                ui.add_enabled_ui(!sizes.is_empty(), |ui| {
+                                    ui.menu_button("Shrink to", |ui| {
+                                        ui.weak("same format, full mip chain; the model is saved");
+                                        for s in sizes {
+                                            let (w, h) = if t.width >= t.height { (s, (t.height * s / t.width.max(1)).max(4)) } else { ((t.width * s / t.height.max(1)).max(4), s) };
+                                            if ui.button(format!("{w} x {h}")).clicked() {
+                                                *act = Some((i, TexAct::Shrink(s)));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                });
+                            }
                             if ui.button("Replace with image or DDS...").clicked() {
-                                *act = Some((i, 2));
+                                *act = Some((i, TexAct::Replace));
                                 ui.close();
                             }
                             if ui.button("Export as DDS...").clicked() {
-                                *act = Some((i, 0));
+                                *act = Some((i, TexAct::ExportDds));
                                 ui.close();
                             }
                             if ui.button("Export as PNG...").clicked() {
-                                *act = Some((i, 1));
+                                *act = Some((i, TexAct::ExportPng));
                                 ui.close();
                             }
                         });
@@ -1692,6 +1788,8 @@ fn main() -> eframe::Result {
     let ytd_window = raw.iter().position(|a| a == "--ytd-window").and_then(|i| raw.get(i + 1)).cloned();
     let picture = raw.iter().position(|a| a == "--picture").and_then(|i| raw.get(i + 1)).cloned();
     let clothing_folder = raw.iter().position(|a| a == "--clothing-folder").and_then(|i| raw.get(i + 1)).cloned();
+    let clothing_find = raw.iter().position(|a| a == "--clothing-find").and_then(|i| raw.get(i + 1)).cloned();
+    let clothing_layout = raw.iter().any(|a| a == "--clothing-layout");
     let rename_folder = raw.iter().position(|a| a == "--rename-folder").and_then(|i| raw.get(i + 1)).cloned();
     let rename_preset = raw.iter().position(|a| a == "--rename-preset").and_then(|i| raw.get(i + 1)).and_then(|n| n.parse::<usize>().ok());
     let ytyp_window = raw.iter().position(|a| a == "--ytyp-window").and_then(|i| raw.get(i + 1)).cloned();
@@ -1749,6 +1847,9 @@ fn main() -> eframe::Result {
         if let Some(d) = &clothing_folder {
             app.mode = Mode::Tools;
             app.tools.open_clothing(Path::new(d));
+            if clothing_find.is_some() || clothing_layout {
+                app.tools.clothing_select(clothing_find.as_deref().unwrap_or(""), clothing_layout);
+            }
         }
         if let Some(d) = &rename_folder {
             app.mode = Mode::Tools;
