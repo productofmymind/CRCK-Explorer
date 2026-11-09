@@ -1788,6 +1788,8 @@ fn main() -> eframe::Result {
     let ytd_window = raw.iter().position(|a| a == "--ytd-window").and_then(|i| raw.get(i + 1)).cloned();
     let picture = raw.iter().position(|a| a == "--picture").and_then(|i| raw.get(i + 1)).cloned();
     let clothing_folder = raw.iter().position(|a| a == "--clothing-folder").and_then(|i| raw.get(i + 1)).cloned();
+    let clothing_find = raw.iter().position(|a| a == "--clothing-find").and_then(|i| raw.get(i + 1)).cloned();
+    let clothing_layout = raw.iter().any(|a| a == "--clothing-layout");
     let rename_folder = raw.iter().position(|a| a == "--rename-folder").and_then(|i| raw.get(i + 1)).cloned();
     let rename_preset = raw.iter().position(|a| a == "--rename-preset").and_then(|i| raw.get(i + 1)).and_then(|n| n.parse::<usize>().ok());
     let ytyp_window = raw.iter().position(|a| a == "--ytyp-window").and_then(|i| raw.get(i + 1)).cloned();
@@ -1845,6 +1847,9 @@ fn main() -> eframe::Result {
         if let Some(d) = &clothing_folder {
             app.mode = Mode::Tools;
             app.tools.open_clothing(Path::new(d));
+            if clothing_find.is_some() || clothing_layout {
+                app.tools.clothing_select(clothing_find.as_deref().unwrap_or(""), clothing_layout);
+            }
         }
         if let Some(d) = &rename_folder {
             app.mode = Mode::Tools;

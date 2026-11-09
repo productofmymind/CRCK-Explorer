@@ -138,6 +138,123 @@ enum Cmd {
         #[command(subcommand)]
         cmd: YcdCmd,
     },
+    /// Clothing packs: open a built pack (one resource or a folder of them) as a project, check a project
+    Clothing {
+        #[command(subcommand)]
+        cmd: ClothingCmd,
+    },
+    /// Metadata files (.ymt, creature metadata, PSO): show them as XML
+    Ymt {
+        #[command(subcommand)]
+        cmd: YmtCmd,
+    },
+}
+
+#[derive(clap::Args, Clone, Default)]
+struct TextureArgs {
+    /// shrink textures in .ytd files to this longest side, in this build only (off unless given)
+    #[arg(long)]
+    ytd_max: Option<u32>,
+    /// shrink textures embedded in models to this longest side, in this build only (off unless given)
+    #[arg(long)]
+    ydd_max: Option<u32>,
+    /// with --ydd-max: only embedded textures of these formats, e.g. ati2 or ati2,dxt5 (default: all)
+    #[arg(long)]
+    ydd_only: Option<String>,
+}
+
+impl TextureArgs {
+    fn apply(&self, o: &mut rage_toolkit_core::clothing::TextureOptimize) {
+        if let Some(m) = self.ytd_max {
+            o.ytd_max = (m > 0).then_some(m);
+        }
+        if let Some(m) = self.ydd_max {
+            o.ydd_max = (m > 0).then_some(m);
+        }
+        if let Some(f) = &self.ydd_only {
+            o.ydd_formats = f.clone();
+        }
+    }
+}
+
+/// a progress line on stderr, at most every 2%
+fn progress_line(what: &'static str) -> impl Fn(usize, usize) + Sync {
+    move |done: usize, all: usize| {
+        let step = (all / 50).max(1);
+        if done % step == 0 || done == all {
+            eprint!("\r{what}: {done}/{all}   ");
+            if done == all {
+                eprintln!();
+            }
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum ClothingCmd {
+    /// Open a built clothing pack (a FiveM resource, or a folder with a control resource and stream resources) and save it as a
+    /// project. Every note says what was carried as it is or looks wrong in the pack. Nothing in the pack is changed.
+    Import {
+        dir: PathBuf,
+        /// only resources whose folder name starts with this (e.g. gtaw_char_clothes)
+        #[arg(long)]
+        only: Option<String>,
+        /// the project file to write (.ragetoolkitclothes); without it only the summary and notes are shown
+        #[arg(long)]
+        save: Option<PathBuf>,
+    },
+    /// Build a project (.ragetoolkitclothes) or an opened pack folder into FiveM resources
+    Build {
+        input: PathBuf,
+        /// the folder the resource(s) are written into
+        #[arg(long)]
+        out: PathBuf,
+        /// single (one resource) or control-streams (a control resource and stream resources); default: the project's
+        #[arg(long)]
+        layout: Option<String>,
+        /// the most drawables of one type and sex per stream resource (default: the project's, 128)
+        #[arg(long)]
+        stream_limit: Option<usize>,
+        /// the project name for the resources (default: the project's)
+        #[arg(long)]
+        name: Option<String>,
+        /// write over an earlier build: only changed files are written, files it no longer has are listed
+        #[arg(long)]
+        update: bool,
+        /// with --update: delete the files the build no longer has
+        #[arg(long)]
+        remove_stale: bool,
+        /// only show what would be written
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        only: Option<String>,
+        #[command(flatten)]
+        textures: TextureArgs,
+    },
+    /// How big a project's textures are (in .ytd files and embedded in models), by longest side, and what shrinking them would save
+    Size {
+        input: PathBuf,
+        #[arg(long)]
+        only: Option<String>,
+        #[command(flatten)]
+        textures: TextureArgs,
+    },
+    /// Check a project (.ragetoolkitclothes) or a built pack folder: every problem with how to fix it (exit 1 on errors)
+    Check {
+        input: PathBuf,
+        #[arg(long)]
+        only: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum YmtCmd {
+    /// A binary .ymt (Meta, RBF or PSO) as XML; printed unless an output file is given
+    ToXml {
+        input: PathBuf,
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -914,6 +1031,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             YcdCmd::Info { input } => print!("{}", ycdtools::ycd_info(&input)?),
         },
+        Cmd::Clothing { cmd } => return clothing_cmd(cmd),
+        Cmd::Ymt { cmd: YmtCmd::ToXml { input, out } } => {
+            let (xml, warnings) = rage_toolkit_core::clothing::metadata_xml(&fs::read(&input)?)?;
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
+            match out {
+                Some(o) => fs::write(&o, xml)?,
+                None => print!("{xml}"),
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1067,5 +1195,124 @@ fn print_report(rep: &[pipeline::TextureReport]) {
     println!("{:<w$}  {:>9}  {:<8} {:>4}  {:>10}  note", "name", "size", "format", "mips", "bytes");
     for r in rep {
         println!("{:<w$}  {:>9}  {:<8} {:>4}  {:>10}  {}", r.name, format!("{}x{}", r.width, r.height), r.format, r.levels, r.bytes, r.note.as_deref().unwrap_or(""));
+    }
+}
+
+fn clothing_cmd(cmd: ClothingCmd) -> Result<ExitCode> {
+    use rage_toolkit_core::clothing::{self, import, project, Sev, Sex};
+    let summary = |p: &clothing::Project| {
+        println!("project {}: {} DLC(s), {} drawable(s), {} file(s) carried as they are", p.name, p.dlcs.len(), p.drawables.len(), p.carried.len());
+        for k in 0..p.dlcs.len() {
+            let count = |sex: Sex| p.drawables.iter().filter(|d| d.dlc == k && d.sex == sex).count();
+            println!("  {} / {}{}: {} male, {} female", p.dlc_name(k, Sex::Male), p.dlc_name(k, Sex::Female), if p.dlcs[k].base { " (Rockstar's)" } else { "" }, count(Sex::Male), count(Sex::Female));
+        }
+    };
+    match cmd {
+        ClothingCmd::Import { dir, only, save } => {
+            let im = import::import_tree(&dir, only.as_deref())?;
+            summary(&im.project);
+            for n in &im.notes {
+                println!("note: {n}");
+            }
+            if let Some(f) = save {
+                project::save(&im.project, &f)?;
+                println!("saved {}", f.display());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        ClothingCmd::Size { input, only, textures } => {
+            let mut p = if input.is_dir() { import::import_tree(&input, only.as_deref())?.project } else { project::load(&input)? };
+            textures.apply(&mut p.optimize);
+            summary(&p);
+            let r = clothing::build::texture_sizes(&p, &p.optimize, &progress_line("reading"));
+            print!("{}", clothing::build::format_sizes(&r, &p.optimize));
+            Ok(ExitCode::SUCCESS)
+        }
+        ClothingCmd::Build { input, out, layout, stream_limit, name, update, remove_stale, dry_run, only, textures } => {
+            use clothing::build;
+            let mut p = if input.is_dir() { import::import_tree(&input, only.as_deref())?.project } else { project::load(&input)? };
+            match layout.as_deref() {
+                None => {}
+                Some("single") => p.layout = clothing::Layout::Single,
+                Some("control-streams") => p.layout = clothing::Layout::ControlAndStreams,
+                Some(other) => bail!("unknown layout {other}: single or control-streams"),
+            }
+            if let Some(n) = stream_limit {
+                p.stream_limit = n.max(1);
+            }
+            textures.apply(&mut p.optimize);
+            if p.optimize.is_on() {
+                println!("textures: .ytd up to {}, in models up to {} ({})", p.optimize.ytd_max.map_or("as they are".into(), |m| format!("{m} px")), p.optimize.ydd_max.map_or("as they are".into(), |m| format!("{m} px")), if p.optimize.ydd_formats.is_empty() { "all formats" } else { &p.optimize.ydd_formats });
+            }
+            if let Some(n) = name {
+                if let Some(why) = clothing::name_problem(&n) {
+                    bail!("the name {n:?}: {why}");
+                }
+                p.name = n;
+            }
+            summary(&p);
+            let plan = build::plan_build(&p);
+            for i in plan.issues.iter().filter(|i| i.sev == Sev::Error) {
+                println!("error {}: {} (fix: {})", i.code, i.message, i.fix);
+            }
+            let warnings = plan.issues.iter().filter(|i| i.sev == Sev::Warning).count();
+            if plan.errors() > 0 {
+                println!("{} error(s), {warnings} warning(s): nothing was written", plan.errors());
+                return Ok(ExitCode::from(1));
+            }
+            let mut per: std::collections::BTreeMap<String, usize> = Default::default();
+            for o in &plan.outputs {
+                let r = if plan.resource.is_empty() { o.dest.split_once('/').map(|x| x.0.to_string()).unwrap_or_else(|| "(top)".into()) } else { plan.resource.clone() };
+                *per.entry(r).or_default() += 1;
+            }
+            for (r, n) in &per {
+                println!("  {r}: {n} file(s)");
+            }
+            println!("{} file(s), {warnings} warning(s) (clothing check lists them)", plan.outputs.len());
+            if dry_run {
+                return Ok(ExitCode::SUCCESS);
+            }
+            let shrunk = |s: &build::WriteStats| {
+                if s.shrunk > 0 || !s.copied_instead.is_empty() {
+                    let mb = |b: u64| b as f64 / 1_048_576.0;
+                    println!("{} file(s) with smaller textures: {:.1} MB -> {:.1} MB", s.shrunk, mb(s.bytes_before), mb(s.bytes_after));
+                    for c in s.copied_instead.iter().take(10) {
+                        println!("  copied as it is (could not be optimized): {c}");
+                    }
+                    if s.copied_instead.len() > 10 {
+                        println!("  and {} more", s.copied_instead.len() - 10);
+                    }
+                }
+            };
+            if update {
+                let r = build::build_update_with(&plan, &out, remove_stale, &progress_line("writing"))?;
+                println!("{} written, {} unchanged, {} no longer in the build{}", r.written, r.unchanged, r.stale.len(), if r.removed_stale { " (removed)" } else if r.stale.is_empty() { "" } else { " (kept: --remove-stale deletes them)" });
+                for f in r.stale.iter().take(20) {
+                    println!("  {}", f.display());
+                }
+                shrunk(&r.stats);
+            } else {
+                let (dir, stats) = build::build_with(&plan, &out, &progress_line("writing"))?;
+                println!("built into {}", dir.display());
+                shrunk(&stats);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        ClothingCmd::Check { input, only } => {
+            let p = if input.is_dir() { import::import_tree(&input, only.as_deref())?.project } else { project::load(&input)? };
+            summary(&p);
+            let issues = clothing::validate(&p);
+            for i in &issues {
+                let sev = match i.sev {
+                    Sev::Error => "error",
+                    Sev::Warning => "warning",
+                    Sev::Info => "note",
+                };
+                println!("{sev} {}: {} (fix: {})", i.code, i.message, i.fix);
+            }
+            let errors = issues.iter().filter(|i| i.sev == Sev::Error).count();
+            println!("{errors} error(s), {} warning(s)", issues.iter().filter(|i| i.sev == Sev::Warning).count());
+            Ok(if errors > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+        }
     }
 }

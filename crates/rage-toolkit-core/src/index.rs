@@ -77,6 +77,11 @@ impl FileIndex {
         &self.sources[r.source as usize]
     }
 
+    /// every file, in the order the archives were walked
+    pub fn records(&self) -> &[Record] {
+        &self.records
+    }
+
     pub fn sources(&self) -> &[String] {
         &self.sources
     }

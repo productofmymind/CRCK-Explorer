@@ -51,7 +51,7 @@ pub mod meta_write;
 pub mod pso_write;
 #[cfg(feature = "encode")]
 pub mod texture_encode;
-mod rbf;
+pub mod rbf;
 
 pub use hash::rage_joaat;
 pub use blocks::ydr::{read_ydr, write_ydr, dump_ydr_xml, build_ydr_from_xml, build_ydr_from_xml_checked};

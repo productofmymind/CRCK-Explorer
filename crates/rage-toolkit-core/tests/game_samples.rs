@@ -214,7 +214,7 @@ fn vehicle_parts_are_named_after_their_bones() {
 /// the props' anchor / id / texture count and the anchor lists. A sample by default; `CRCK_EXPLORER_YMT_ALL=1` runs all of them.
 #[test]
 fn generated_ymts_have_the_structure_of_the_games_own() {
-    use rage_toolkit_core::clothing::build::{ymt_bytes, Shape};
+    use rage_toolkit_core::clothing::ymt::{ymt_bytes, Ymt};
     use rage_formats::{dump_meta, MetaValue};
     let Ok(g) = Game::open(None) else {
         eprintln!("no GTA V install found: skipped");
@@ -238,8 +238,9 @@ fn generated_ymts_have_the_structure_of_the_games_own() {
             out.push(format!("numAvailTex {:?}", c.field("numAvailTex").and_then(|v| v.as_i64())));
             for d in c.field("aDrawblData3").map(|v| v.items()).unwrap_or(&[]) {
                 let d = d.as_struct().unwrap();
-                // (numAlternatives, the first-person alternates, is not modelled)
-                out.push(format!("drawable tex {} cloth {:?}", d.field("aTexData").map(|t| t.items().len()).unwrap_or(0), d.field("clothData").and_then(|c| c.as_struct()).and_then(|c| c.field("ownsCloth"))));
+                let ids: Vec<i64> = d.field("aTexData").map(|t| t.items()).unwrap_or(&[]).iter().filter_map(|t| t.as_struct()?.field("texId")?.as_i64()).collect();
+                let int = |n: &str| d.field(n).and_then(|v| v.as_i64());
+                out.push(format!("drawable tex {ids:?} propMask {:?} alternates {:?} cloth {:?}", int("propMask"), int("numAlternatives"), d.field("clothData").and_then(|c| c.as_struct()).and_then(|c| c.field("ownsCloth"))));
             }
         }
         // the game lists compInfos in the order the clothes were authored, not sorted; each names its own component and index,
@@ -272,7 +273,7 @@ fn generated_ymts_have_the_structure_of_the_games_own() {
         if vanilla.root.as_struct().and_then(|s| s.field("availComp")).is_none() {
             continue;
         }
-        let shape = Shape::of_tree(&vanilla.root);
+        let (shape, _, _) = Ymt::read(&vanilla.root).unwrap_or_else(|e| panic!("{}: {e:#}", f.path));
         let ours = dump_meta(&ymt_bytes(&shape, "x").unwrap_or_else(|e| panic!("{}: {e:#}", f.path))).unwrap();
         let (a, b) = (facts(&vanilla.root), facts(&ours.root));
         if let Some(i) = a.iter().zip(&b).position(|(x, y)| x != y).or_else(|| (a.len() != b.len()).then_some(a.len().min(b.len()))) {

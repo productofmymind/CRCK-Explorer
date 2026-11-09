@@ -81,8 +81,8 @@ pub fn check(data: &[u8]) -> Result<Fidelity> {
     }
     .context("reading the rewritten file")?;
 
-    let names = NameTable::core();
-    let mut c = Cmp { names: &names, out: vec![], total: 0, upgraded: 0 };
+    let names = NameTable::core_shared();
+    let mut c = Cmp { names, out: vec![], total: 0, upgraded: 0 };
     c.value(&dump.root, &again.root, &mut String::new());
 
     let (archetypes, mlos) = count_archetypes(&dump.root);

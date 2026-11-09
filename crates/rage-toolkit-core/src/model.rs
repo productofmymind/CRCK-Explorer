@@ -121,8 +121,8 @@ fn report(e: &DrawableEntry, names: &NameTable) -> DrawableReport {
 }
 
 pub fn inspect(path: &Path) -> Result<Vec<DrawableReport>> {
-    let names = NameTable::core();
-    Ok(load(path)?.iter().map(|e| report(e, &names)).collect())
+    let names = NameTable::core_shared();
+    Ok(load(path)?.iter().map(|e| report(e, names)).collect())
 }
 
 /// textures a model names (any shader parameter) that are neither embedded nor present in `available` (a YTD's texture names)
@@ -157,6 +157,39 @@ pub struct Bone {
     /// the id a fragment's physics children name their bone by
     pub tag: u16,
     pub parent: Option<usize>,
+    /// the bind pose relative to the parent: rotation (quaternion x, y, z, w) and translation
+    pub rotation: [f32; 4],
+    pub translation: [f32; 3],
+}
+
+/// Each bone's bind pose in the model's space (parents first): the local rotations and translations chained down from the root.
+pub fn bone_world(bones: &[Bone]) -> Vec<glam::Mat4> {
+    let mut out: Vec<glam::Mat4> = Vec::with_capacity(bones.len());
+    for b in bones {
+        let [x, y, z, w] = b.rotation;
+        let q = glam::Quat::from_xyzw(x, y, z, w);
+        let local = glam::Mat4::from_rotation_translation(if q.length_squared() > 0.0 { q.normalize() } else { glam::Quat::IDENTITY }, glam::Vec3::from(b.translation));
+        // a parent always comes before its children in the file; a bad index counts as the root
+        let parent = b.parent.filter(|&p| p < out.len()).map(|p| out[p]).unwrap_or(glam::Mat4::IDENTITY);
+        out.push(parent * local);
+    }
+    out
+}
+
+/// Move meshes by a matrix (a prop to the bone it hangs on).
+pub fn transform_meshes(meshes: &mut [MeshPart], m: glam::Mat4) {
+    for part in meshes {
+        for p in &mut part.positions {
+            *p = m.transform_point3(glam::Vec3::from(*p)).into();
+        }
+        for n in &mut part.normals {
+            *n = m.transform_vector3(glam::Vec3::from(*n)).normalize_or_zero().into();
+        }
+        for t in &mut part.tangents {
+            let d = m.transform_vector3(glam::Vec3::new(t[0], t[1], t[2])).normalize_or_zero();
+            *t = [d.x, d.y, d.z, t[3]];
+        }
+    }
 }
 
 /// The skeleton of a fragment's main drawable (bones in index order). Empty when the file has none or it cannot be read.
@@ -172,10 +205,11 @@ pub fn fragment_bones(data: &[u8]) -> Vec<Bone> {
         let (first, count) = (u64_le(skeleton, 0x20), u16_le(skeleton, 0x5E) as usize);
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            // 80 bytes each: parent index at +0x32, name pointer at +0x38, tag at +0x44
+            // 80 bytes each: rotation at +0x00, translation at +0x10, parent index at +0x32, name pointer at +0x38, tag at +0x44
             let b = r.resolve(first + 80 * i as u64, 80)?;
             let parent = i16::from_le_bytes([b[0x32], b[0x33]]);
-            out.push(Bone { index: i, name: r.string_at(u64_le(b, 0x38)).unwrap_or_default(), tag: u16_le(b, 0x44), parent: usize::try_from(parent).ok() });
+            let f = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            out.push(Bone { index: i, name: r.string_at(u64_le(b, 0x38)).unwrap_or_default(), tag: u16_le(b, 0x44), parent: usize::try_from(parent).ok(), rotation: [f(0), f(4), f(8), f(12)], translation: [f(16), f(20), f(24)] });
         }
         Some(out)
     };

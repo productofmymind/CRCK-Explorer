@@ -151,6 +151,11 @@ impl Tools {
         self.clothing.open_folder(dir);
     }
 
+    /// `--clothing-find NAME` / `--clothing-layout` (automated screenshots)
+    pub fn clothing_select(&mut self, name: &str, layout: bool) {
+        self.clothing.select_named(name, layout);
+    }
+
     /// `--handling file` (automated screenshots): open the editor on a file
     pub fn open_handling(&mut self, path: &Path) {
         self.page = Page::Handling;

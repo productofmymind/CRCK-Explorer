@@ -16,11 +16,11 @@ fn ext(name: &str) -> String {
 
 /// The XML of a `.ydr`, `.ybn` or `.yft` (`data` is the file; `name` picks the format).
 pub fn export(name: &str, data: &[u8]) -> Result<String> {
-    let names = NameTable::core();
+    let names = NameTable::core_shared();
     match ext(name).as_str() {
-        "ydr" => rage_formats::dump_ydr_xml(data, &names, None),
+        "ydr" => rage_formats::dump_ydr_xml(data, names, None),
         "ybn" => rage_formats::dump_ybn_xml(data),
-        "yft" => rage_formats::dump_yft_xml(data, &names, None),
+        "yft" => rage_formats::dump_yft_xml(data, names, None),
         e => bail!("no XML export for .{e} files"),
     }
 }

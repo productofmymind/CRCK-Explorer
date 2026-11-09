@@ -19,7 +19,12 @@ pub struct Want {
     pub sex: Sex,
     pub kind: Kind,
     pub body: bool,
+    /// the level of detail shown, the drawable's and the body's
+    pub lod: LodLevel,
 }
+
+/// the levels of detail, as the preview offers them
+pub const LODS: [(LodLevel, &str); 4] = [(LodLevel::High, "High"), (LodLevel::Medium, "Medium"), (LodLevel::Low, "Low"), (LodLevel::VeryLow, "Very low")];
 
 /// meshes, textures for the GPU (name, width, height, RGBA), bounds, a line for the status
 type Scene = (Vec<MeshPart>, Vec<Pixels>, (Vec3, Vec3), String);
@@ -59,7 +64,25 @@ fn textures_of(path: &std::path::Path) -> anyhow::Result<Vec<Pixels>> {
 
 /// Load everything to show (on a thread).
 fn load(want: &Want, game: Option<&Game>) -> anyhow::Result<Scene> {
-    let mut meshes = model::placed_meshes(&want.ydd, LodLevel::High)?;
+    let mut meshes = model::placed_meshes(&want.ydd, want.lod)?;
+    let mut note = String::new();
+    let lod_name = LODS.iter().find(|l| l.0 == want.lod).map_or("", |l| l.1);
+    // its own triangles at this level (a model without this level shows only the body)
+    let own: usize = meshes.iter().map(|m| m.indices.len() / 3).sum();
+    if meshes.is_empty() {
+        note = format!(" (the model has no {} LOD)", lod_name.to_lowercase());
+    }
+    // a prop is modelled around the bone it hangs on (a hat around the head bone): it goes onto that bone of the ped's skeleton
+    if let Kind::Prop(anchor) = want.kind {
+        match game.map(|g| body::freemode_skeleton(g, want.sex)) {
+            Some(Ok(bones)) => match body::anchor_matrix(&bones, anchor) {
+                Some(m) => model::transform_meshes(&mut meshes, m),
+                None => note = " (its anchor bone is not in the skeleton: shown where it is modelled)".into(),
+            },
+            Some(Err(e)) => note = format!(" (no skeleton: {e:#})"),
+            None => note = " (GTA V was not found: shown where it is modelled, not on the ped)".into(),
+        }
+    }
     let mut textures = match &want.texture {
         Some(t) => textures_of(t)?,
         None => vec![],
@@ -72,7 +95,6 @@ fn load(want: &Want, game: Option<&Game>) -> anyhow::Result<Scene> {
             m.diffuse = Some(first.clone());
         }
     }
-    let mut note = String::new();
     if want.body {
         match game {
             Some(g) => {
@@ -81,7 +103,7 @@ fn load(want: &Want, game: Option<&Game>) -> anyhow::Result<Scene> {
                     Kind::Prop(_) => None,
                 };
                 for part in body::freemode_body(g, want.sex)?.into_iter().filter(|p| Some(p.component) != replaced) {
-                    meshes.extend(model::placed_meshes(&part.ydd, LodLevel::High)?);
+                    meshes.extend(model::placed_meshes(&part.ydd, want.lod)?);
                     if let Some(t) = &part.ytd {
                         textures.extend(textures_of(t)?);
                     }
@@ -100,10 +122,11 @@ fn load(want: &Want, game: Option<&Game>) -> anyhow::Result<Scene> {
         mx = mx.max(b);
     }
     if !mn.is_finite() {
-        anyhow::bail!("{}: no geometry to show", want.ydd.display());
+        anyhow::bail!("{}: no geometry at this level of detail{note}", want.ydd.display());
     }
     let tris: usize = meshes.iter().map(|m| m.indices.len() / 3).sum();
-    Ok((meshes, textures, (mn, mx), format!("{tris} triangles{note}")))
+    let body_tris = if want.body && tris > own { format!(", {tris} with the body") } else { String::new() };
+    Ok((meshes, textures, (mn, mx), format!("{lod_name} LOD: {own} triangles{body_tris}{note}")))
 }
 
 impl Preview {
@@ -145,6 +168,7 @@ impl Preview {
                             self.parts = meshes.len();
                             self.bounds = bounds;
                             self.status = status;
+                            // a new body or the body switched on or off: frame it again; another LOD keeps the camera
                             self.frame_next = self.shown.as_ref().map(|s| (s.sex, s.body)) != Some((w.sex, w.body));
                         }
                         Err(e) => self.status = format!("{e:#}"),

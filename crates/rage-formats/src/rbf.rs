@@ -248,6 +248,85 @@ pub fn parse(data: &[u8]) -> Result<RbfStructure> {
     root.context("rbf: stream ended before the root element closed")
 }
 
+/// Writes `root` as an RBF0 stream: the mirror of [`parse`]. Names get
+/// descriptor indices in first-use order (each name is written once, then
+/// referred to by index), a structure lists its attributes before its
+/// children, and raw bytes are `0xFD` blobs. A stream this crate parsed is
+/// written back byte for byte.
+pub fn write(root: &RbfStructure) -> Result<Vec<u8>> {
+    let mut out = RBF_MAGIC.to_vec();
+    let mut names: Vec<String> = Vec::new();
+    write_structure(&mut out, &mut names, root)?;
+    Ok(out)
+}
+
+/// The record head: the descriptor index, the type, and the name when this is its first use.
+fn head(out: &mut Vec<u8>, names: &mut Vec<String>, name: &str, kind: u8) -> Result<()> {
+    // indices 0xFD and 0xFF are the blob and close tags
+    let (index, first) = match names.iter().position(|n| n == name) {
+        Some(i) => (i, false),
+        None => {
+            names.push(name.to_string());
+            (names.len() - 1, true)
+        }
+    };
+    if index >= 0xFD {
+        bail!("rbf: more than {} distinct names", 0xFD);
+    }
+    out.push(index as u8);
+    out.push(kind);
+    if first {
+        let len = i16::try_from(name.len()).context("rbf: name too long")?;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+    }
+    Ok(())
+}
+
+fn write_value(out: &mut Vec<u8>, names: &mut Vec<String>, name: &str, v: &RbfValue) -> Result<()> {
+    match v {
+        RbfValue::Structure(s) => write_structure(out, names, s)?,
+        RbfValue::Bytes(b) => {
+            out.extend_from_slice(&[0xFD, 0xFF]);
+            out.extend_from_slice(&u32::try_from(b.len()).context("rbf: blob too long")?.to_le_bytes());
+            out.extend_from_slice(b);
+        }
+        RbfValue::Uint(x) => {
+            head(out, names, name, 0x10)?;
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+        RbfValue::Bool(b) => head(out, names, name, if *b { 0x20 } else { 0x30 })?,
+        RbfValue::Float(f) => {
+            head(out, names, name, 0x40)?;
+            out.extend_from_slice(&f.to_le_bytes());
+        }
+        RbfValue::Float3(f) => {
+            head(out, names, name, 0x50)?;
+            for x in f {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        RbfValue::Str(s) => {
+            head(out, names, name, 0x60)?;
+            out.extend_from_slice(&i16::try_from(s.len()).context("rbf: string too long")?.to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn write_structure(out: &mut Vec<u8>, names: &mut Vec<String>, s: &RbfStructure) -> Result<()> {
+    head(out, names, &s.name, 0x00)?;
+    out.extend_from_slice(&0i16.to_le_bytes());
+    out.extend_from_slice(&0i16.to_le_bytes());
+    out.extend_from_slice(&i16::try_from(s.attributes.len()).context("rbf: too many attributes")?.to_le_bytes());
+    for (n, v) in s.attributes.iter().chain(&s.children) {
+        write_value(out, names, n, v)?;
+    }
+    out.extend_from_slice(&[0xFF, 0xFF]);
+    Ok(())
+}
+
 /// Adds `value` to `current`'s attributes or children, consuming one unit of
 /// `pending` when it is positive (the reference tool `RbfStructure.AddChild`).
 fn add_value(current: &mut RbfStructure, pending: &mut i16, name: String, value: RbfValue) {
@@ -505,6 +584,37 @@ mod tests {
         for n in 0..full.len() {
             let _ = parse(&full[..n]); // must return Err, not panic
         }
+    }
+
+    #[test]
+    fn a_parsed_stream_is_written_back_byte_for_byte() {
+        for data in [build_gtxd_rbf(&[("child_a", "parent_a"), ("child_b", "parent_b")]), {
+            let mut d = RBF_MAGIC.to_vec();
+            d.extend(open(0, Some("Root"), 1));
+            d.extend(string_node(1, Some("content"), "char_array"));
+            d.extend(uint_node(2, Some("u"), 7));
+            d.extend(float_node(3, Some("f"), -0.5));
+            d.extend(float3_node(4, Some("v"), [1.0, 2.0, 3.0]));
+            d.extend(bool_node(5, Some("yes"), true));
+            d.extend(bool_node(5, None, false));
+            d.extend(bytes_node("blob"));
+            d.extend(open(6, Some("Item"), 0));
+            d.extend(uint_node(2, None, 8));
+            d.extend(close());
+            d.extend(close());
+            d
+        }] {
+            let root = parse(&data).unwrap();
+            assert_eq!(write(&root).unwrap(), data);
+        }
+    }
+
+    /// A real file (set CRCK_RBF_FILE): parsed and written back identically.
+    #[test]
+    #[ignore = "needs a file: set CRCK_RBF_FILE=<an RBF0 .ymt> and run with --ignored"]
+    fn a_real_rbf_file_is_written_back_byte_for_byte() {
+        let data = std::fs::read(std::env::var("CRCK_RBF_FILE").expect("CRCK_RBF_FILE")).unwrap();
+        assert_eq!(write(&parse(&data).unwrap()).unwrap(), data);
     }
 
     #[test]
