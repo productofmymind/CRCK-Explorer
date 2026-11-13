@@ -40,6 +40,8 @@ Start it and you get a screen that asks *what do you want to do?* Click a card, 
 
 Everything the window does is also a command (`crck-explorer-cli ...`), so it can be scripted.
 
+**CRCK Livery** (`CRCK-Livery.exe`, in the same download) is the Liveries page's *livery .dds to .yft* card as a small program of its own: pick one of the vehicle's livery files, pick your picture, and it writes the new livery `.yft`. It follows the theme chosen in CRCK Explorer.
+
 ## A look around
 
 <p align="center"><img src="assets/screenshots/explorer.png" alt="The Explorer, showing the game's vehicles archive" width="90%"></p>
