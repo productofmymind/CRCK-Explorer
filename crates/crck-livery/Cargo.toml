@@ -1,0 +1,17 @@
+[package]
+name = "crck-livery"
+version = "0.4.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "A livery .dds (or any picture) made into a livery .yft: CRCK Explorer's Liveries card as a program of its own"
+
+[[bin]]
+name = "CRCK-Livery"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "clipboard", "wayland", "x11"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rage-toolkit-core = { path = "../rage-toolkit-core" }
+rfd = "0.17.2"

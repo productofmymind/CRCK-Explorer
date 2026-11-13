@@ -545,6 +545,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "crck-livery"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "image",
+ "rage-toolkit-core",
+ "rfd",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"

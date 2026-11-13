@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rage-toolkit-core", "crates/crck-explorer-cli", "crates/rage-toolkit-app", "crates/rage-formats", "crates/rpf-archive"]
+members = ["crates/rage-toolkit-core", "crates/crck-explorer-cli", "crates/rage-toolkit-app", "crates/crck-livery", "crates/rage-formats", "crates/rpf-archive"]
 resolver = "2"
 
 # vendored + patched: see crates/rpf-archive/PATCHES.md
